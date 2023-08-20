@@ -40,14 +40,14 @@ once_cell = "1"
 # EVM
 bytes = "1"
 hashbrown = { version = "0.13", features = ["serde"] }
-revm = { version = "3", default-features = false, features = [
-  "std",
-  "serde",
-  "memory_limit",
-  "optional_eip3607",
-  "optional_block_gas_limit",
-  "optional_no_base_fee",
-] }
+# revm = { version = "3", default-features = false, features = [
+#   "std",
+#   "serde",
+#   "memory_limit",
+#   "optional_eip3607",
+#   "optional_block_gas_limit",
+#   "optional_no_base_fee",
+# ] }
 
 # Fuzzer
 proptest = "1"
@@ -68,3 +68,15 @@ semver = "1"
 [dev-dependencies]
 foundry-utils.workspace = true
 tempfile = "3"
+
+[dependencies.revm]
+path = "../../../revm/crates/revm"
+default-features = false
+features = [
+  "std",
+  "serde",
+  "memory_limit",
+  "optional_eip3607",
+  "optional_block_gas_limit",
+  "optional_no_base_fee",
+]

@@ -29,6 +29,7 @@ pub enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    println!("Lit Protocol Anvil Fork Launching");
     let mut app = App::parse();
     app.node.evm_opts.resolve_rpc_alias();
 
