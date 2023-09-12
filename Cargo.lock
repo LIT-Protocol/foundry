@@ -3043,7 +3043,7 @@ dependencies = [
 [[package]]
 name = "hd-keys-ecdsa"
 version = "0.1.0"
-source = "git+https://github.com/LIT-Protocol/hd-keys-ecdsa.git#1c99f15f67e61f8220b69cb6eb27752d56a6049a"
+source = "git+https://github.com/LIT-Protocol/hd-keys-ecdsa.git#8585c921e8c6bbc8734953b96b788a3f13371a90"
 dependencies = [
  "digest 0.10.7",
  "k256",
