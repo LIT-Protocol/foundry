@@ -71,7 +71,8 @@ foundry-utils.workspace = true
 tempfile = "3"
 
 [dependencies.revm]
-path = "../../../revm/crates/revm"
+git = "https://github.com/LIT-Protocol/revm"
+# path = "../../../revm/crates/revm"
 default-features = false
 features = [
   "std",

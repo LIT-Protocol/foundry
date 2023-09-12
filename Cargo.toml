@@ -135,8 +135,12 @@ foundry-utils = { path = "crates/utils" }
 foundry-debugger = { path = "crates/debugger" }
 
 ## revm
-revm = { version = "3", default-features = false }
-revm-primitives = { version = "1", default-features = false }
+# revm = { version = "3", default-features = false }
+# revm-primitives = { version = "1", default-features = false }
+# revm-interpreter = { git = "https://github.com/LIT-Protocol/revm" }
+# revm-precompile = { git = "https://github.com/LIT-Protocol/revm" }
+revm-primitives = { git = "https://github.com/LIT-Protocol/revm" }
+revm = { git = "https://github.com/LIT-Protocol/revm" }
 
 ethers = { git = "https://github.com/gakonst/ethers-rs", default-features = false }
 ethers-addressbook = { git = "https://github.com/gakonst/ethers-rs", default-features = false }
@@ -167,8 +171,8 @@ tikv-jemallocator = "0.5.4"
 #ethers-signers = { path = "../ethers-rs/ethers-signers" }
 #ethers-solc = { path = "../ethers-rs/ethers-solc" }
 
-[patch.crates-io]
-revm-interpreter = { git = "https://github.com/LIT-Protocol/revm" }
-revm-precompile = { git = "https://github.com/LIT-Protocol/revm" }
-revm-primitives = { git = "https://github.com/LIT-Protocol/revm" }
-revm = { git = "https://github.com/LIT-Protocol/revm" }
+# [patch.crates-io]
+# revm-interpreter = { git = "https://github.com/LIT-Protocol/revm" }
+# revm-precompile = { git = "https://github.com/LIT-Protocol/revm" }
+# revm-primitives = { git = "https://github.com/LIT-Protocol/revm" }
+# revm = { git = "https://github.com/LIT-Protocol/revm" }
