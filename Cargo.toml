@@ -168,8 +168,7 @@ tikv-jemallocator = "0.5.4"
 #ethers-solc = { path = "../ethers-rs/ethers-solc" }
 
 [patch.crates-io]
-revm-interpreter = { git = "https://github.com/bluealloy/revm/", rev = "7eacc3a728b8a9cf3c15db609753e5d9f69e08ce" }
-revm-precompile = { git = "https://github.com/bluealloy/revm/", rev = "7eacc3a728b8a9cf3c15db609753e5d9f69e08ce" }
-revm-primitives = { git = "https://github.com/bluealloy/revm/", rev = "7eacc3a728b8a9cf3c15db609753e5d9f69e08ce" }
-# revm = { git = "https://github.com/bluealloy/revm/", branch = "release/v25" }
-revm = { path = "../revm/crates/revm" }
+revm-interpreter = { git = "https://github.com/LIT-Protocol/revm" }
+revm-precompile = { git = "https://github.com/LIT-Protocol/revm" }
+revm-primitives = { git = "https://github.com/LIT-Protocol/revm" }
+revm = { git = "https://github.com/LIT-Protocol/revm" }
