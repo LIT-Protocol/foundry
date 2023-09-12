@@ -2,9 +2,10 @@
 
 use crate::{
     config::*,
-    test_helpers::{filter::Filter, RE_PATH_SEPARATOR},
+    test_helpers::{filter::Filter, PROJECT, RE_PATH_SEPARATOR},
 };
 use forge::result::SuiteResult;
+use foundry_config::{fs_permissions::PathPermission, Config, FsPermissions};
 
 /// Executes reverting fork test
 #[tokio::test(flavor = "multi_thread")]
@@ -36,15 +37,49 @@ async fn test_cheats_fork_revert() {
 /// Executes all non-reverting fork cheatcodes
 #[tokio::test(flavor = "multi_thread")]
 async fn test_cheats_fork() {
+    let mut config = Config::with_root(PROJECT.root());
+    config.fs_permissions = FsPermissions::new(vec![PathPermission::read("./fixtures")]);
+    let runner = runner_with_config(config);
     let filter = Filter::new(".*", ".*", &format!(".*cheats{RE_PATH_SEPARATOR}Fork"))
         .exclude_tests(".*Revert");
-    TestConfig::filter(filter).await.run().await;
+    TestConfig::with_filter(runner.await, filter).run().await;
+}
+
+/// Executes eth_getLogs cheatcode
+#[tokio::test(flavor = "multi_thread")]
+async fn test_get_logs_fork() {
+    let mut config = Config::with_root(PROJECT.root());
+    config.fs_permissions = FsPermissions::new(vec![PathPermission::read("./fixtures")]);
+    let runner = runner_with_config(config);
+    let filter = Filter::new("testEthGetLogs", ".*", &format!(".*cheats{RE_PATH_SEPARATOR}Fork"))
+        .exclude_tests(".*Revert");
+    TestConfig::with_filter(runner.await, filter).run().await;
+}
+
+/// Executes rpc cheatcode
+#[tokio::test(flavor = "multi_thread")]
+async fn test_rpc_fork() {
+    let mut config = Config::with_root(PROJECT.root());
+    config.fs_permissions = FsPermissions::new(vec![PathPermission::read("./fixtures")]);
+    let runner = runner_with_config(config);
+    let filter = Filter::new("testRpc", ".*", &format!(".*cheats{RE_PATH_SEPARATOR}Fork"))
+        .exclude_tests(".*Revert");
+    TestConfig::with_filter(runner.await, filter).run().await;
 }
 
 /// Tests that we can launch in forking mode
 #[tokio::test(flavor = "multi_thread")]
 async fn test_launch_fork() {
     let rpc_url = foundry_utils::rpc::next_http_archive_rpc_endpoint();
+    let runner = forked_runner(&rpc_url).await;
+    let filter = Filter::new(".*", ".*", &format!(".*fork{RE_PATH_SEPARATOR}Launch"));
+    TestConfig::with_filter(runner, filter).run().await;
+}
+
+/// Smoke test that forking workings with websockets
+#[tokio::test(flavor = "multi_thread")]
+async fn test_launch_fork_ws() {
+    let rpc_url = foundry_utils::rpc::next_ws_archive_rpc_endpoint();
     let runner = forked_runner(&rpc_url).await;
     let filter = Filter::new(".*", ".*", &format!(".*fork{RE_PATH_SEPARATOR}Launch"));
     TestConfig::with_filter(runner, filter).run().await;

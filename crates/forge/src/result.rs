@@ -5,8 +5,9 @@ use ethers::prelude::Log;
 use foundry_common::evm::Breakpoints;
 use foundry_evm::{
     coverage::HitMaps,
+    debug::DebugArena,
     executor::EvmError,
-    fuzz::{CounterExample, FuzzCase},
+    fuzz::{types::FuzzCase, CounterExample},
     trace::{TraceKind, Traces},
 };
 use serde::{Deserialize, Serialize};
@@ -17,7 +18,7 @@ use std::{collections::BTreeMap, fmt, time::Duration};
 pub struct SuiteResult {
     /// Total duration of the test run for this block of tests
     pub duration: Duration,
-    /// Individual test results. `test method name -> TestResult`
+    /// Individual test results. `test fn signature -> TestResult`
     pub test_results: BTreeMap<String, TestResult>,
     /// Warnings
     pub warnings: Vec<String>,
@@ -58,12 +59,32 @@ impl SuiteResult {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TestStatus {
     Success,
     #[default]
     Failure,
     Skipped,
+}
+
+impl TestStatus {
+    /// Returns `true` if the test was successful.
+    #[inline]
+    pub fn is_success(self) -> bool {
+        matches!(self, Self::Success)
+    }
+
+    /// Returns `true` if the test failed.
+    #[inline]
+    pub fn is_failure(self) -> bool {
+        matches!(self, Self::Failure)
+    }
+
+    /// Returns `true` if the test was skipped.
+    #[inline]
+    pub fn is_skipped(self) -> bool {
+        matches!(self, Self::Skipped)
+    }
 }
 
 /// The result of an executed solidity test
@@ -101,6 +122,9 @@ pub struct TestResult {
 
     /// Labeled addresses
     pub labeled_addresses: BTreeMap<Address, String>,
+
+    /// The debug nodes of the call
+    pub debug: Option<DebugArena>,
 
     /// pc breakpoint char map
     pub breakpoints: Breakpoints,

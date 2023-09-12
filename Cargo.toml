@@ -5,7 +5,7 @@ resolver = "2"
 [workspace.package]
 version = "0.2.0"
 edition = "2021"
-rust-version = "1.71"
+rust-version = "1.72"
 authors = ["Foundry Contributors"]
 license = "MIT OR Apache-2.0"
 homepage = "https://github.com/foundry-rs/foundry"
@@ -19,14 +19,22 @@ debug = 0
 
 # Speed up tests and dev build
 [profile.dev.package]
+# solc
+ethers-solc.opt-level = 3
+solang-parser.opt-level = 3
+serde_json.opt-level = 3
+
 # evm
 revm.opt-level = 3
 revm-primitives.opt-level = 3
 revm-interpreter.opt-level = 3
 revm-precompile.opt-level = 3
 tiny-keccak.opt-level = 3
+sha2.opt-level = 3
+sha3.opt-level = 3
+keccak.opt-level = 3
 ruint.opt-level = 3
-primitive-types.opt-level = 3
+hashbrown.opt-level = 3
 
 # keystores
 scrypt.opt-level = 3
@@ -34,12 +42,21 @@ scrypt.opt-level = 3
 # forking
 axum.opt-level = 3
 
+# Optimized release profile
 [profile.release]
 opt-level = "s"
 lto = "fat"
 strip = true
 panic = "abort"
 codegen-units = 1
+
+# Like release, but with full debug symbols and with stack unwinds. Useful for e.g. `perf`.
+[profile.debug-fast]
+inherits = "release"
+debug = "full"
+strip = "none"
+panic = "unwind"
+incremental = false
 
 [profile.release.package]
 # Optimize all non-workspace packages for speed
@@ -48,7 +65,6 @@ codegen-units = 1
 # Package overrides
 foundry-evm.opt-level = 3
 
-ethers-solc.opt-level = 1
 foundry-abi.opt-level = 1
 mdbook.opt-level = 1
 protobuf.opt-level = 1
@@ -93,12 +109,11 @@ wasm-bindgen-backend.opt-level = 0
 
 # Local "release" mode, more optimized than dev but much faster to compile than release
 [profile.local]
-inherits = "release"
+inherits = "dev"
 opt-level = 1
-lto = "none"
+strip = true
+panic = "abort"
 codegen-units = 16
-# Empty, clears `profile.release.package`
-package = {}
 
 [workspace.dependencies]
 anvil = { path = "crates/anvil" }
@@ -117,7 +132,15 @@ foundry-evm = { path = "crates/evm" }
 foundry-macros = { path = "crates/macros" }
 foundry-test-utils = { path = "crates/test-utils" }
 foundry-utils = { path = "crates/utils" }
-ui = { path = "crates/ui" }
+foundry-debugger = { path = "crates/debugger" }
+
+## revm
+# revm = { version = "3", default-features = false }
+# revm-primitives = { version = "1", default-features = false }
+# revm-interpreter = { git = "https://github.com/LIT-Protocol/revm" }
+# revm-precompile = { git = "https://github.com/LIT-Protocol/revm" }
+revm-primitives = { git = "https://github.com/LIT-Protocol/revm" }
+revm = { git = "https://github.com/LIT-Protocol/revm" }
 
 ethers = { git = "https://github.com/gakonst/ethers-rs", default-features = false }
 ethers-addressbook = { git = "https://github.com/gakonst/ethers-rs", default-features = false }
@@ -133,7 +156,8 @@ ethers-solc = { git = "https://github.com/gakonst/ethers-rs", default-features =
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 hex = { package = "const-hex", version = "1.6", features = ["hex"] }
 itertools = "0.11"
-solang-parser = "=0.3.1"
+solang-parser = "=0.3.2"
+tikv-jemallocator = "0.5.4"
 
 #[patch."https://github.com/gakonst/ethers-rs"]
 #ethers = { path = "../ethers-rs/ethers" }
@@ -147,6 +171,8 @@ solang-parser = "=0.3.1"
 #ethers-signers = { path = "../ethers-rs/ethers-signers" }
 #ethers-solc = { path = "../ethers-rs/ethers-solc" }
 
-[patch.crates-io]
-# revm = { git = "https://github.com/bluealloy/revm/", branch = "release/v25" }
-revm = { path = "../revm/crates/revm" }
+# [patch.crates-io]
+# revm-interpreter = { git = "https://github.com/LIT-Protocol/revm" }
+# revm-precompile = { git = "https://github.com/LIT-Protocol/revm" }
+# revm-primitives = { git = "https://github.com/LIT-Protocol/revm" }
+# revm = { git = "https://github.com/LIT-Protocol/revm" }

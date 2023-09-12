@@ -32,7 +32,10 @@ use foundry_common::{
 };
 use foundry_config::Config;
 use foundry_evm::{
-    executor::fork::{BlockchainDb, BlockchainDbMeta, SharedBackend},
+    executor::{
+        fork::{BlockchainDb, BlockchainDbMeta, SharedBackend},
+        inspector::DEFAULT_CREATE2_DEPLOYER,
+    },
     revm,
     revm::primitives::{BlockEnv, CfgEnv, SpecId, TxEnv, U256 as rU256},
     utils::{apply_chain_and_block_specific_env_changes, h256_to_b256, u256_to_ru256},
@@ -163,6 +166,8 @@ pub struct NodeConfig {
     pub init_state: Option<SerializableState>,
     /// max number of blocks with transactions in memory
     pub transaction_block_keeper: Option<usize>,
+    /// Disable the default CREATE2 deployer
+    pub disable_default_create2_deployer: bool,
 }
 
 impl NodeConfig {
@@ -398,6 +403,7 @@ impl Default for NodeConfig {
             prune_history: Default::default(),
             init_state: None,
             transaction_block_keeper: None,
+            disable_default_create2_deployer: false,
         }
     }
 }
@@ -775,18 +781,19 @@ impl NodeConfig {
     /// *Note*: only memory based backend for now
     pub(crate) async fn setup(&mut self) -> mem::Backend {
         // configure the revm environment
+
+        let mut cfg = CfgEnv::default();
+        cfg.spec_id = self.get_hardfork().into();
+        cfg.chain_id = self.get_chain_id();
+        cfg.limit_contract_code_size = self.code_size_limit;
+        // EIP-3607 rejects transactions from senders with deployed code.
+        // If EIP-3607 is enabled it can cause issues during fuzz/invariant tests if the
+        // caller is a contract. So we disable the check by default.
+        cfg.disable_eip3607 = true;
+        cfg.disable_block_gas_limit = self.disable_block_gas_limit;
+
         let mut env = revm::primitives::Env {
-            cfg: CfgEnv {
-                spec_id: self.get_hardfork().into(),
-                chain_id: rU256::from(self.get_chain_id()),
-                limit_contract_code_size: self.code_size_limit,
-                // EIP-3607 rejects transactions from senders with deployed code.
-                // If EIP-3607 is enabled it can cause issues during fuzz/invariant tests if the
-                // caller is a contract. So we disable the check by default.
-                disable_eip3607: true,
-                disable_block_gas_limit: self.disable_block_gas_limit,
-                ..Default::default()
-            },
+            cfg,
             block: BlockEnv {
                 gas_limit: self.gas_limit.into(),
                 basefee: self.get_base_fee().into(),
@@ -929,7 +936,7 @@ latest block number: {latest_block}"
 
                     // need to update the dev signers and env with the chain id
                     self.set_chain_id(Some(chain_id));
-                    env.cfg.chain_id = rU256::from(chain_id);
+                    env.cfg.chain_id = chain_id;
                     env.tx.chain_id = chain_id.into();
                     chain_id
                 };
@@ -1004,6 +1011,15 @@ latest block number: {latest_block}"
             self.block_time,
         )
         .await;
+
+        // Writes the default create2 deployer to the backend,
+        // if the option is not disabled and we are not forking.
+        if !self.disable_default_create2_deployer && self.eth_rpc_url.is_none() {
+            backend
+                .set_create2_deployer(DEFAULT_CREATE2_DEPLOYER)
+                .await
+                .expect("Failed to create default create2 deployer");
+        }
 
         if let Some(ref state) = self.init_state {
             backend

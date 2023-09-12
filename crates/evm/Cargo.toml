@@ -66,11 +66,13 @@ walkdir = "2"
 semver = "1"
 
 [dev-dependencies]
+ethers = { workspace = true, features = ["ethers-solc", "rustls"] }
 foundry-utils.workspace = true
 tempfile = "3"
 
 [dependencies.revm]
-path = "../../../revm/crates/revm"
+git = "https://github.com/LIT-Protocol/revm"
+# path = "../../../revm/crates/revm"
 default-features = false
 features = [
   "std",

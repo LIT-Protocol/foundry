@@ -57,10 +57,15 @@ mod fs;
 mod fuzz;
 /// Mapping related cheatcodes
 mod mapping;
+/// Parsing related cheatcodes.
+/// Does not include JSON-related cheatcodes to cut complexity.
+mod parse;
 /// Snapshot related cheatcodes
 mod snapshot;
-/// Utility cheatcodes (`sign` etc.)
+/// Utility functions and constants.
 pub mod util;
+/// Wallet / key management related cheatcodes
+mod wallet;
 pub use util::{BroadcastableTransaction, DEFAULT_CREATE2_DEPLOYER};
 
 mod config;
@@ -197,16 +202,10 @@ pub struct Cheatcodes {
 }
 
 impl Cheatcodes {
-    /// Creates a new `Cheatcodes` based on the given settings
-    pub fn new(block: BlockEnv, gas_price: U256, config: CheatsConfig) -> Self {
-        Self {
-            corrected_nonce: false,
-            block: Some(block),
-            gas_price: Some(gas_price),
-            config: Arc::new(config),
-            fs_commit: true,
-            ..Default::default()
-        }
+    /// Creates a new `Cheatcodes` with the given settings.
+    #[inline]
+    pub fn new(config: Arc<CheatsConfig>) -> Self {
+        Self { config, fs_commit: true, ..Default::default() }
     }
 
     #[instrument(level = "error", name = "apply", target = "evm::cheatcodes", skip_all)]
@@ -223,13 +222,13 @@ impl Cheatcodes {
         // but only if the backend is in forking mode
         data.db.ensure_cheatcode_access_forking_mode(caller)?;
 
-        // TODO: Log the opcode for the debugger
         let opt = env::apply(self, data, caller, &decoded)
             .transpose()
-            .or_else(|| util::apply(self, data, &decoded))
+            .or_else(|| wallet::apply(self, data, &decoded))
+            .or_else(|| parse::apply(self, data, &decoded))
             .or_else(|| expect::apply(self, data, &decoded))
             .or_else(|| fuzz::apply(&decoded))
-            .or_else(|| ext::apply(self, &decoded))
+            .or_else(|| ext::apply(self, data, &decoded))
             .or_else(|| fs::apply(self, &decoded))
             .or_else(|| snapshot::apply(data, &decoded))
             .or_else(|| fork::apply(self, data, &decoded));
@@ -295,15 +294,12 @@ impl Cheatcodes {
     }
 }
 
-impl<DB> Inspector<DB> for Cheatcodes
-where
-    DB: DatabaseExt,
-{
+impl<DB: DatabaseExt> Inspector<DB> for Cheatcodes {
+    #[inline]
     fn initialize_interp(
         &mut self,
         _: &mut Interpreter,
         data: &mut EVMData<'_, DB>,
-        _: bool,
     ) -> InstructionResult {
         // When the first interpreter is initialized we've circumvented the balance and gas checks,
         // so we apply our actual block data with the correct fees and all.
@@ -321,7 +317,6 @@ where
         &mut self,
         interpreter: &mut Interpreter,
         data: &mut EVMData<'_, DB>,
-        _: bool,
     ) -> InstructionResult {
         self.pc = interpreter.program_counter();
 
@@ -332,7 +327,7 @@ where
                 self.gas_metering = Some(Some(interpreter.gas));
             }
             Some(Some(gas)) => {
-                match interpreter.contract.bytecode.bytecode()[interpreter.program_counter()] {
+                match interpreter.current_opcode() {
                     opcode::CREATE | opcode::CREATE2 => {
                         // set we're about to enter CREATE frame to meter its gas on first opcode
                         // inside it
@@ -384,7 +379,7 @@ where
 
         // Record writes and reads if `record` has been called
         if let Some(storage_accesses) = &mut self.accesses {
-            match interpreter.contract.bytecode.bytecode()[interpreter.program_counter()] {
+            match interpreter.current_opcode() {
                 opcode::SLOAD => {
                     let key = try_or_continue!(interpreter.stack().peek(0));
                     storage_accesses
@@ -427,7 +422,7 @@ where
             // size of the memory write is implicit, so these cases are hard-coded.
             macro_rules! mem_opcode_match {
                 ([$(($opcode:ident, $offset_depth:expr, $size_depth:expr, $writes:expr)),*]) => {
-                    match interpreter.contract.bytecode.bytecode()[interpreter.program_counter()] {
+                    match interpreter.current_opcode() {
                         ////////////////////////////////////////////////////////////////
                         //    OPERATIONS THAT CAN EXPAND/MUTATE MEMORY BY WRITING     //
                         ////////////////////////////////////////////////////////////////
@@ -522,7 +517,7 @@ where
                 (CALLCODE, 5, 6, true),
                 (STATICCALL, 4, 5, true),
                 (DELEGATECALL, 4, 5, true),
-                (SHA3, 0, 1, false),
+                (KECCAK256, 0, 1, false),
                 (LOG0, 0, 1, false),
                 (LOG1, 0, 1, false),
                 (LOG2, 0, 1, false),
@@ -577,7 +572,6 @@ where
         &mut self,
         data: &mut EVMData<'_, DB>,
         call: &mut CallInputs,
-        is_static: bool,
     ) -> (InstructionResult, Gas, bytes::Bytes) {
         if call.contract == h160_to_b160(CHEATCODE_ADDRESS) {
             let gas = Gas::new(call.gas_limit);
@@ -686,7 +680,7 @@ where
                     // because we only need the from, to, value, and data. We can later change this
                     // into 1559, in the cli package, relatively easily once we
                     // know the target chain supports EIP-1559.
-                    if !is_static {
+                    if !call.is_static {
                         if let Err(err) = data
                             .journaled_state
                             .load_account(h160_to_b160(broadcast.new_origin), data.db)
@@ -751,7 +745,6 @@ where
         remaining_gas: Gas,
         status: InstructionResult,
         retdata: bytes::Bytes,
-        _: bool,
     ) -> (InstructionResult, Gas, bytes::Bytes) {
         if call.contract == h160_to_b160(CHEATCODE_ADDRESS) ||
             call.contract == h160_to_b160(HARDHAT_CONSOLE_ADDRESS)
@@ -771,9 +764,11 @@ where
         if let Some(prank) = &self.prank {
             if data.journaled_state.depth() == prank.depth {
                 data.env.tx.caller = h160_to_b160(prank.prank_origin);
-            }
-            if prank.single_call {
-                std::mem::take(&mut self.prank);
+
+                // Clean single-call prank once we have returned to the original depth
+                if prank.single_call {
+                    std::mem::take(&mut self.prank);
+                }
             }
         }
 
@@ -781,10 +776,11 @@ where
         if let Some(broadcast) = &self.broadcast {
             if data.journaled_state.depth() == broadcast.depth {
                 data.env.tx.caller = h160_to_b160(broadcast.original_origin);
-            }
 
-            if broadcast.single_call {
-                std::mem::take(&mut self.broadcast);
+                // Clean single-call broadcast once we have returned to the original depth
+                if broadcast.single_call {
+                    std::mem::take(&mut self.broadcast);
+                }
             }
         }
 
@@ -1056,9 +1052,11 @@ where
         if let Some(prank) = &self.prank {
             if data.journaled_state.depth() == prank.depth {
                 data.env.tx.caller = h160_to_b160(prank.prank_origin);
-            }
-            if prank.single_call {
-                std::mem::take(&mut self.prank);
+
+                // Clean single-call prank once we have returned to the original depth
+                if prank.single_call {
+                    std::mem::take(&mut self.prank);
+                }
             }
         }
 
@@ -1066,10 +1064,11 @@ where
         if let Some(broadcast) = &self.broadcast {
             if data.journaled_state.depth() == broadcast.depth {
                 data.env.tx.caller = h160_to_b160(broadcast.original_origin);
-            }
 
-            if broadcast.single_call {
-                std::mem::take(&mut self.broadcast);
+                // Clean single-call broadcast once we have returned to the original depth
+                if broadcast.single_call {
+                    std::mem::take(&mut self.broadcast);
+                }
             }
         }
 
@@ -1111,6 +1110,14 @@ pub struct Context {
 impl Clone for Context {
     fn clone(&self) -> Self {
         Default::default()
+    }
+}
+
+impl Context {
+    /// Clears the context.
+    #[inline]
+    pub fn clear(&mut self) {
+        self.opened_read_files.clear();
     }
 }
 

@@ -88,7 +88,7 @@ impl ScriptRunner {
         // Optionally call the `setUp` function
         let (success, gas_used, labeled_addresses, transactions, debug, script_wallets) = if !setup
         {
-            self.executor.backend_mut().set_test_contract(address);
+            self.executor.backend.set_test_contract(address);
             (
                 true,
                 0,
@@ -167,6 +167,7 @@ impl ScriptRunner {
                 debug,
                 address: None,
                 script_wallets,
+                ..Default::default()
             },
         ))
     }
@@ -179,17 +180,12 @@ impl ScriptRunner {
         sender_initial_nonce: U256,
         libraries_len: usize,
     ) -> Result<()> {
-        if let Some(ref cheatcodes) = self.executor.inspector_config().cheatcodes {
+        if let Some(cheatcodes) = &self.executor.inspector.cheatcodes {
             if !cheatcodes.corrected_nonce {
                 self.executor
                     .set_nonce(self.sender, sender_initial_nonce.as_u64() + libraries_len as u64)?;
             }
-            self.executor
-                .inspector_config_mut()
-                .cheatcodes
-                .as_mut()
-                .expect("exists")
-                .corrected_nonce = false;
+            self.executor.inspector.cheatcodes.as_mut().unwrap().corrected_nonce = false;
         }
         Ok(())
     }
@@ -241,10 +237,8 @@ impl ScriptRunner {
                     })
                     .unwrap_or_default(),
                 debug: vec![debug].into_iter().collect(),
-                labeled_addresses: Default::default(),
-                transactions: Default::default(),
                 address: Some(address),
-                script_wallets: vec![],
+                ..Default::default()
             })
         } else {
             eyre::bail!("ENS not supported.");
@@ -289,6 +283,7 @@ impl ScriptRunner {
             script_wallets,
             ..
         } = res;
+        let breakpoints = res.cheatcodes.map(|cheats| cheats.breakpoints).unwrap_or_default();
 
         Ok(ScriptResult {
             returned: result,
@@ -307,6 +302,7 @@ impl ScriptRunner {
             transactions,
             address: None,
             script_wallets,
+            breakpoints,
         })
     }
 
@@ -327,14 +323,14 @@ impl ScriptRunner {
         let mut gas_used = res.gas_used;
         if matches!(res.exit_reason, return_ok!()) {
             // store the current gas limit and reset it later
-            let init_gas_limit = self.executor.env_mut().tx.gas_limit;
+            let init_gas_limit = self.executor.env.tx.gas_limit;
 
             let mut highest_gas_limit = gas_used * 3;
             let mut lowest_gas_limit = gas_used;
             let mut last_highest_gas_limit = highest_gas_limit;
             while (highest_gas_limit - lowest_gas_limit) > 1 {
                 let mid_gas_limit = (highest_gas_limit + lowest_gas_limit) / 2;
-                self.executor.env_mut().tx.gas_limit = mid_gas_limit;
+                self.executor.env.tx.gas_limit = mid_gas_limit;
                 let res = self.executor.call_raw(from, to, calldata.0.clone(), value)?;
                 match res.exit_reason {
                     InstructionResult::Revert |
@@ -360,7 +356,7 @@ impl ScriptRunner {
                 }
             }
             // reset gas limit in the
-            self.executor.env_mut().tx.gas_limit = init_gas_limit;
+            self.executor.env.tx.gas_limit = init_gas_limit;
         }
         Ok(gas_used)
     }

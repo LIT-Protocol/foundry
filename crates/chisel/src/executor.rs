@@ -290,14 +290,15 @@ impl SessionSource {
         };
 
         // Build a new executor
-        let executor = ExecutorBuilder::default()
-            .with_config(env)
-            .with_chisel_state(final_pc)
-            .set_tracing(true)
-            .with_spec(foundry_evm::utils::evm_spec(&self.config.foundry_config.evm_version))
-            .with_gas_limit(self.config.evm_opts.gas_limit())
-            .with_cheatcodes(CheatsConfig::new(&self.config.foundry_config, &self.config.evm_opts))
-            .build(backend);
+        let executor = ExecutorBuilder::new()
+            .inspectors(|stack| {
+                stack.chisel_state(final_pc).trace(true).cheatcodes(
+                    CheatsConfig::new(&self.config.foundry_config, &self.config.evm_opts).into(),
+                )
+            })
+            .gas_limit(self.config.evm_opts.gas_limit())
+            .spec(self.config.foundry_config.evm_spec_id())
+            .build(env, backend);
 
         // Create a [ChiselRunner] with a default balance of [U256::MAX] and
         // the sender [Address::zero].
@@ -1342,7 +1343,6 @@ impl<'a> Iterator for InstructionIter<'a> {
 mod tests {
     use super::*;
     use ethers_solc::{error::SolcError, Solc};
-    use once_cell::sync::Lazy;
     use std::sync::Mutex;
 
     #[test]
@@ -1612,25 +1612,31 @@ mod tests {
     #[track_caller]
     fn source() -> SessionSource {
         // synchronize solc install
-        static PRE_INSTALL_SOLC_LOCK: Lazy<Mutex<bool>> = Lazy::new(|| Mutex::new(false));
+        static PRE_INSTALL_SOLC_LOCK: Mutex<bool> = Mutex::new(false);
 
         // on some CI targets installing results in weird malformed solc files, we try installing it
         // multiple times
+        let version = "0.8.19";
         for _ in 0..3 {
             let mut is_preinstalled = PRE_INSTALL_SOLC_LOCK.lock().unwrap();
             if !*is_preinstalled {
-                let solc =
-                    Solc::find_or_install_svm_version("0.8.19").and_then(|solc| solc.version());
-                if solc.is_err() {
-                    // try reinstalling
-                    let solc = Solc::blocking_install(&"0.8.19".parse().unwrap());
-                    if solc.map_err(SolcError::from).and_then(|solc| solc.version()).is_ok() {
-                        *is_preinstalled = true;
+                let solc = Solc::find_or_install_svm_version(version)
+                    .and_then(|solc| solc.version().map(|v| (solc, v)));
+                match solc {
+                    Ok((solc, v)) => {
+                        // successfully installed
+                        eprintln!("found installed Solc v{v} @ {}", solc.solc.display());
                         break
                     }
-                } else {
-                    // successfully installed
-                    break
+                    Err(e) => {
+                        // try reinstalling
+                        eprintln!("error: {e}\n trying to re-install Solc v{version}");
+                        let solc = Solc::blocking_install(&version.parse().unwrap());
+                        if solc.map_err(SolcError::from).and_then(|solc| solc.version()).is_ok() {
+                            *is_preinstalled = true;
+                            break
+                        }
+                    }
                 }
             }
         }

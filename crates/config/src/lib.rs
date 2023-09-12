@@ -76,6 +76,7 @@ pub mod fix;
 
 // reexport so cli types can implement `figment::Provider` to easily merge compiler arguments
 pub use figment;
+use revm_primitives::SpecId;
 use tracing::warn;
 
 /// config providers
@@ -205,6 +206,8 @@ pub struct Config {
     pub verbosity: u8,
     /// url of the rpc server that should be used for any rpc calls
     pub eth_rpc_url: Option<String>,
+    /// JWT secret that should be used for any rpc calls
+    pub eth_rpc_jwt: Option<String>,
     /// etherscan API key, or alias for an `EtherscanConfig` in `etherscan` table
     pub etherscan_api_key: Option<String>,
     /// Multiple etherscan api configs and their aliases
@@ -353,6 +356,13 @@ pub struct Config {
     ///
     /// This includes what operations can be executed (read, write)
     pub fs_permissions: FsPermissions,
+
+    /// Temporary config to enable [SpecId::CANCUN]
+    ///
+    /// <https://github.com/foundry-rs/foundry/issues/5782>
+    /// Should be removed once EvmVersion Cancun is supported by solc
+    pub cancun: bool,
+
     /// The root path where the config detection started from, `Config::with_root`
     #[doc(hidden)]
     //  We're skipping serialization here, so it won't be included in the [`Config::to_string()`]
@@ -683,6 +693,15 @@ impl Config {
         Ok(None)
     }
 
+    /// Returns the [SpecId] derived from the configured [EvmVersion]
+    #[inline]
+    pub fn evm_spec_id(&self) -> SpecId {
+        if self.cancun {
+            return SpecId::CANCUN
+        }
+        evm_spec_id(&self.evm_version)
+    }
+
     /// Returns whether the compiler version should be auto-detected
     ///
     /// Returns `false` if `solc_version` is explicitly set, otherwise returns the value of
@@ -750,6 +769,25 @@ impl Config {
     /// ```
     pub fn get_all_remappings(&self) -> Vec<Remapping> {
         self.remappings.iter().map(|m| m.clone().into()).collect()
+    }
+
+    /// Returns the configured rpc jwt secret
+    ///
+    /// Returns:
+    ///    - The jwt secret, if configured
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// 
+    /// use foundry_config::Config;
+    /// # fn t() {
+    ///     let config = Config::with_root("./");
+    ///     let rpc_jwt = config.get_rpc_jwt_secret().unwrap().unwrap();
+    /// # }
+    /// ```
+    pub fn get_rpc_jwt_secret(&self) -> Result<Option<Cow<str>>, UnresolvedEnvVarError> {
+        Ok(self.eth_rpc_jwt.as_ref().map(|jwt| Cow::Borrowed(jwt.as_str())))
     }
 
     /// Returns the configured rpc url
@@ -1722,6 +1760,7 @@ impl Default for Config {
         Self {
             profile: Self::DEFAULT_PROFILE,
             fs_permissions: FsPermissions::new([PathPermission::read("out")]),
+            cancun: false,
             __root: Default::default(),
             src: "src".into(),
             test: "test".into(),
@@ -1774,6 +1813,7 @@ impl Default for Config {
             block_gas_limit: None,
             memory_limit: 2u64.pow(25),
             eth_rpc_url: None,
+            eth_rpc_jwt: None,
             etherscan_api_key: None,
             verbosity: 0,
             remappings: vec![],

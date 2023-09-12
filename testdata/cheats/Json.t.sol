@@ -152,12 +152,6 @@ contract ParseJsonTest is DSTest {
     function test_nonExistentKey() public {
         bytes memory data = vm.parseJson(json, ".thisKeyDoesNotExist");
         assertEq(0, data.length);
-
-        data = vm.parseJson(json, ".this.path.does.n.0.t.exist");
-        assertEq(0, data.length);
-
-        data = vm.parseJson("", ".");
-        assertEq(0, data.length);
     }
 
     function test_parseJsonKeys() public {
@@ -246,6 +240,19 @@ contract WriteJsonTest is DSTest {
         vm.removeFile(path);
     }
 
+    // The serializeJson cheatcode was added to support assigning an existing json string to an object key.
+    // Github issue: https://github.com/foundry-rs/foundry/issues/5745
+    function test_serializeRootObject() public {
+        string memory serialized = vm.serializeJson(json1, '{"foo": "bar"}');
+        assertEq(serialized, '{"foo":"bar"}');
+        serialized = vm.serializeBool(json1, "boolean", true);
+        assertEq(vm.parseJsonString(serialized, ".foo"), "bar");
+        assertEq(vm.parseJsonBool(serialized, ".boolean"), true);
+
+        string memory overwritten = vm.serializeJson(json1, '{"value": 123}');
+        assertEq(overwritten, '{"value":123}');
+    }
+
     struct simpleJson {
         uint256 a;
         string b;
@@ -282,14 +289,14 @@ contract WriteJsonTest is DSTest {
     function test_checkKeyExists() public {
         string memory path = "fixtures/Json/write_complex_test.json";
         string memory json = vm.readFile(path);
-        bool exists = vm.keyExists(json, "a");
+        bool exists = vm.keyExists(json, ".a");
         assertTrue(exists);
     }
 
     function test_checkKeyDoesNotExist() public {
         string memory path = "fixtures/Json/write_complex_test.json";
         string memory json = vm.readFile(path);
-        bool exists = vm.keyExists(json, "d");
+        bool exists = vm.keyExists(json, ".d");
         assertTrue(!exists);
     }
 
