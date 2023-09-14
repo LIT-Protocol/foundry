@@ -5204,7 +5204,7 @@ dependencies = [
 [[package]]
 name = "revm"
 version = "3.3.0"
-source = "git+https://github.com/LIT-Protocol/revm#ed04db119def7526d2d514796d91191ef62d9674"
+source = "git+https://github.com/LIT-Protocol/revm#aaf7e92076f258bf8b5dc2564dab3d7e176fb57c"
 dependencies = [
  "auto_impl",
  "rayon",
@@ -5217,7 +5217,7 @@ dependencies = [
 [[package]]
 name = "revm-interpreter"
 version = "1.1.2"
-source = "git+https://github.com/LIT-Protocol/revm#ed04db119def7526d2d514796d91191ef62d9674"
+source = "git+https://github.com/LIT-Protocol/revm#aaf7e92076f258bf8b5dc2564dab3d7e176fb57c"
 dependencies = [
  "derive_more",
  "enumn",
@@ -5229,7 +5229,7 @@ dependencies = [
 [[package]]
 name = "revm-precompile"
 version = "2.0.3"
-source = "git+https://github.com/LIT-Protocol/revm#ed04db119def7526d2d514796d91191ef62d9674"
+source = "git+https://github.com/LIT-Protocol/revm#aaf7e92076f258bf8b5dc2564dab3d7e176fb57c"
 dependencies = [
  "elliptic-curve",
  "hd-keys-ecdsa",
@@ -5248,7 +5248,7 @@ dependencies = [
 [[package]]
 name = "revm-primitives"
 version = "1.1.2"
-source = "git+https://github.com/LIT-Protocol/revm#ed04db119def7526d2d514796d91191ef62d9674"
+source = "git+https://github.com/LIT-Protocol/revm#aaf7e92076f258bf8b5dc2564dab3d7e176fb57c"
 dependencies = [
  "auto_impl",
  "bitflags 2.4.0",
