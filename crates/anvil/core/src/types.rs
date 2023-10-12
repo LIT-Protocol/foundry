@@ -199,3 +199,15 @@ pub struct NodeForkConfig {
     pub fork_block_number: Option<u64>,
     pub fork_retry_backoff: Option<u128>,
 }
+
+#[derive(Debug, Clone, Default, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+pub struct Metadata {
+    pub client_version: String,
+    pub chain_id: U256,
+    pub instance_id: String,
+    pub latest_block_number: U64,
+    pub latest_block_hash: H256,
+    // pub forked_network: Option<ForkedNetwork>,
+}

@@ -39,7 +39,9 @@ use anvil_core::{
         },
         EthRequest,
     },
-    types::{EvmMineOptions, Forking, Index, NodeEnvironment, NodeForkConfig, NodeInfo, Work},
+    types::{
+        EvmMineOptions, Forking, Index, Metadata, NodeEnvironment, NodeForkConfig, NodeInfo, Work,
+    },
 };
 use anvil_rpc::{error::RpcError, response::ResponseResult};
 use ethers::{
@@ -312,6 +314,7 @@ impl EthApi {
             EthRequest::DumpState(_) => self.anvil_dump_state().await.to_rpc_result(),
             EthRequest::LoadState(buf) => self.anvil_load_state(buf).await.to_rpc_result(),
             EthRequest::NodeInfo(_) => self.anvil_node_info().await.to_rpc_result(),
+            EthRequest::Metadata(_) => self.metadata().await.to_rpc_result(),
             EthRequest::EvmSnapshot(_) => self.evm_snapshot().await.to_rpc_result(),
             EthRequest::EvmRevert(id) => self.evm_revert(id).await.to_rpc_result(),
             EthRequest::EvmIncreaseTime(time) => self.evm_increase_time(time).await.to_rpc_result(),
@@ -1672,6 +1675,21 @@ impl EthApi {
                     }
                 })
                 .unwrap_or_default(),
+        })
+    }
+
+    /// Retrieves the Hardhat-compatible metadata info.
+    ///
+    /// Handler for RPC call: `hardhat_metadata`
+    pub async fn metadata(&self) -> Result<Metadata> {
+        node_info!("hardhat_metadata");
+
+        Ok(Metadata {
+            client_version: "dummy-version".into(),
+            chain_id: self.backend.chain_id(),
+            instance_id: "dummy-id".into(),
+            latest_block_number: self.backend.best_number(),
+            latest_block_hash: self.backend.best_hash(),
         })
     }
 
