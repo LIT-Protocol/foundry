@@ -142,16 +142,16 @@ foundry-debugger = { path = "crates/debugger" }
 revm-primitives = { git = "https://github.com/LIT-Protocol/revm" }
 revm = { git = "https://github.com/LIT-Protocol/revm" }
 
-ethers = { git = "https://github.com/gakonst/ethers-rs", default-features = false }
-ethers-addressbook = { git = "https://github.com/gakonst/ethers-rs", default-features = false }
-ethers-core = { git = "https://github.com/gakonst/ethers-rs", default-features = false }
-ethers-contract = { git = "https://github.com/gakonst/ethers-rs", default-features = false }
-ethers-contract-abigen = { git = "https://github.com/gakonst/ethers-rs", default-features = false }
-ethers-providers = { git = "https://github.com/gakonst/ethers-rs", default-features = false }
-ethers-signers = { git = "https://github.com/gakonst/ethers-rs", default-features = false }
-ethers-middleware = { git = "https://github.com/gakonst/ethers-rs", default-features = false }
-ethers-etherscan = { git = "https://github.com/gakonst/ethers-rs", default-features = false }
-ethers-solc = { git = "https://github.com/gakonst/ethers-rs", default-features = false }
+ethers = { git = "https://github.com/gakonst/ethers-rs", default-features = false, rev = "86e3f56bad158c82e297b86ab2de9eb7c51425af" }
+ethers-addressbook = { git = "https://github.com/gakonst/ethers-rs", default-features = false, rev = "86e3f56bad158c82e297b86ab2de9eb7c51425af" }
+ethers-core = { git = "https://github.com/gakonst/ethers-rs", default-features = false, rev = "86e3f56bad158c82e297b86ab2de9eb7c51425af" }
+ethers-contract = { git = "https://github.com/gakonst/ethers-rs", default-features = false, rev = "86e3f56bad158c82e297b86ab2de9eb7c51425af" }
+ethers-contract-abigen = { git = "https://github.com/gakonst/ethers-rs", default-features = false, rev = "86e3f56bad158c82e297b86ab2de9eb7c51425af" }
+ethers-providers = { git = "https://github.com/gakonst/ethers-rs", default-features = false, rev = "86e3f56bad158c82e297b86ab2de9eb7c51425af" }
+ethers-signers = { git = "https://github.com/gakonst/ethers-rs", default-features = false, rev = "86e3f56bad158c82e297b86ab2de9eb7c51425af" }
+ethers-middleware = { git = "https://github.com/gakonst/ethers-rs", default-features = false, rev = "86e3f56bad158c82e297b86ab2de9eb7c51425af" }
+ethers-etherscan = { git = "https://github.com/gakonst/ethers-rs", default-features = false, rev = "86e3f56bad158c82e297b86ab2de9eb7c51425af" }
+ethers-solc = { git = "https://github.com/gakonst/ethers-rs", default-features = false, rev = "86e3f56bad158c82e297b86ab2de9eb7c51425af" }
 
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 hex = { package = "const-hex", version = "1.6", features = ["hex"] }
