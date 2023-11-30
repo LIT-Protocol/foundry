@@ -134,13 +134,19 @@ foundry-test-utils = { path = "crates/test-utils" }
 foundry-utils = { path = "crates/utils" }
 foundry-debugger = { path = "crates/debugger" }
 
-## revm
+## original revm
 # revm = { version = "3", default-features = false }
 # revm-primitives = { version = "1", default-features = false }
-# revm-interpreter = { git = "https://github.com/LIT-Protocol/revm" }
-# revm-precompile = { git = "https://github.com/LIT-Protocol/revm" }
+
+# Lit revm with precompiles
+revm-interpreter = { git = "https://github.com/LIT-Protocol/revm" }
+revm-precompile = { git = "https://github.com/LIT-Protocol/revm" }
 revm-primitives = { git = "https://github.com/LIT-Protocol/revm" }
-revm = { git = "https://github.com/LIT-Protocol/revm" }
+revm = { git = "https://github.com/LIT-Protocol/revm", default-features = false, features = ["std", "serde", "memory_limit", "optional_eip3607", "optional_block_gas_limit", "optional_no_base_fee"] }
+
+# uncomment this, and comment out the above, if you want to use a local revm for testing etc
+# revm-primitives = { path = "../revm/crates/primitives" }
+# revm = { path = "../revm/crates/revm", default-features = false, features = ["std", "serde", "memory_limit", "optional_eip3607", "optional_block_gas_limit", "optional_no_base_fee"] }
 
 ethers = { git = "https://github.com/gakonst/ethers-rs", default-features = false, rev = "86e3f56bad158c82e297b86ab2de9eb7c51425af" }
 ethers-addressbook = { git = "https://github.com/gakonst/ethers-rs", default-features = false, rev = "86e3f56bad158c82e297b86ab2de9eb7c51425af" }
