@@ -3183,7 +3183,7 @@ dependencies = [
 [[package]]
 name = "hd-keys-ecdsa"
 version = "0.1.0"
-source = "git+https://github.com/LIT-Protocol/hd-keys-ecdsa.git#994712d9442e5d7d48df16142c541d42c1188cab"
+source = "git+https://github.com/LIT-Protocol/hd-keys-ecdsa.git#f37d23f53eb326612d8b311325f6418a30fb7f69"
 dependencies = [
  "digest 0.10.7",
  "k256",
@@ -5392,7 +5392,7 @@ dependencies = [
 [[package]]
 name = "revm"
 version = "3.3.0"
-source = "git+https://github.com/LIT-Protocol/revm#9f03a43fdd7e12dff6026815729e02e0a8cf199f"
+source = "git+https://github.com/LIT-Protocol/revm#845a6d68cf9fc4a8f6779983f31af3eb6a5d7af1"
 dependencies = [
  "auto_impl",
  "rayon",
@@ -5405,7 +5405,7 @@ dependencies = [
 [[package]]
 name = "revm-interpreter"
 version = "1.1.2"
-source = "git+https://github.com/LIT-Protocol/revm#9f03a43fdd7e12dff6026815729e02e0a8cf199f"
+source = "git+https://github.com/LIT-Protocol/revm#845a6d68cf9fc4a8f6779983f31af3eb6a5d7af1"
 dependencies = [
  "derive_more",
  "enumn",
@@ -5417,7 +5417,7 @@ dependencies = [
 [[package]]
 name = "revm-precompile"
 version = "2.0.3"
-source = "git+https://github.com/LIT-Protocol/revm#9f03a43fdd7e12dff6026815729e02e0a8cf199f"
+source = "git+https://github.com/LIT-Protocol/revm#845a6d68cf9fc4a8f6779983f31af3eb6a5d7af1"
 dependencies = [
  "blsful",
  "curve25519-dalek-ml",
@@ -5442,7 +5442,7 @@ dependencies = [
 [[package]]
 name = "revm-primitives"
 version = "1.1.2"
-source = "git+https://github.com/LIT-Protocol/revm#9f03a43fdd7e12dff6026815729e02e0a8cf199f"
+source = "git+https://github.com/LIT-Protocol/revm#845a6d68cf9fc4a8f6779983f31af3eb6a5d7af1"
 dependencies = [
  "auto_impl",
  "bitflags 2.4.0",
