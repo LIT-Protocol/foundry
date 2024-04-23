@@ -486,6 +486,10 @@ pub enum EthRequest {
     #[cfg_attr(feature = "serde", serde(rename = "anvil_nodeInfo", with = "empty_params"))]
     NodeInfo(()),
 
+    /// Retrieves dummy metadata info that is compatible for Hardhat
+    #[cfg_attr(feature = "serde", serde(rename = "hardhat_metadata", with = "empty_params"))]
+    Metadata(()),
+
     // Ganache compatible calls
     /// Snapshot the state of the blockchain at the current block.
     #[cfg_attr(
