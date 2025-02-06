@@ -84,6 +84,7 @@ forgetest!(can_extract_config_values, |prj: TestProject, mut cmd: TestCommand| {
         block_gas_limit: Some(100u64.into()),
         memory_limit: 2u64.pow(25),
         eth_rpc_url: Some("localhost".to_string()),
+        eth_rpc_jwt: None,
         etherscan_api_key: None,
         etherscan: Default::default(),
         verbosity: 4,
@@ -113,6 +114,7 @@ forgetest!(can_extract_config_values, |prj: TestProject, mut cmd: TestCommand| {
         fmt: Default::default(),
         doc: Default::default(),
         fs_permissions: Default::default(),
+        cancun: true,
         __non_exhaustive: (),
         __warnings: vec![],
     };
@@ -223,14 +225,13 @@ forgetest_init!(
         let profile = Config::load_with_root(prj.root());
         // ensure that the auto-generated internal remapping for forge-std's ds-test exists
         assert_eq!(profile.remappings.len(), 2);
-        pretty_eq!("ds-test/=lib/forge-std/lib/ds-test/src/", profile.remappings[0].to_string());
+        let [r, _] = &profile.remappings[..] else { unreachable!() };
+        pretty_eq!("ds-test/=lib/forge-std/lib/ds-test/src/", r.to_string());
 
-        // ensure remappings contain test
-        pretty_eq!("ds-test/=lib/forge-std/lib/ds-test/src/", profile.remappings[0].to_string());
         // the loaded config has resolved, absolute paths
         pretty_eq!(
             "ds-test/=lib/forge-std/lib/ds-test/src/",
-            Remapping::from(profile.remappings[0].clone()).to_string()
+            Remapping::from(r.clone()).to_string()
         );
 
         cmd.arg("config");
@@ -250,14 +251,18 @@ forgetest_init!(
             "solmate/=lib/solmate/src/\nsolmate-contracts/=lib/solmate/src/",
         );
         let config = forge_utils::load_config_with_root(Some(prj.root().into()));
+        // trailing slashes are removed on windows `to_slash_lossy`
+        let path = prj.root().join("lib/solmate/src/").to_slash_lossy().into_owned();
+        #[cfg(windows)]
+        let path = path + "/";
         pretty_eq!(
-            format!("solmate/={}", prj.root().join("lib/solmate/src/").to_slash_lossy()),
+            format!("solmate/={path}"),
             Remapping::from(config.remappings[0].clone()).to_string()
         );
         // As this is an user-generated remapping, it is not removed, even if it points to the same
         // location.
         pretty_eq!(
-            format!("solmate-contracts/={}", prj.root().join("lib/solmate/src/").to_slash_lossy()),
+            format!("solmate-contracts/={path}"),
             Remapping::from(config.remappings[1].clone()).to_string()
         );
         pretty_err(&remappings_txt, fs::remove_file(&remappings_txt));

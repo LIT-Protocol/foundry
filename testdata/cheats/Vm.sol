@@ -24,6 +24,19 @@ interface Vm {
         string url;
     }
 
+    // Used in eth_getLogs
+    struct EthGetLogs {
+        address emitter;
+        bytes32[] topics;
+        bytes data;
+        uint256 blockNumber;
+        bytes32 transactionHash;
+        uint256 transactionIndex;
+        bytes32 blockHash;
+        uint256 logIndex;
+        bool removed;
+    }
+
     // Used in readDir
     struct DirEntry {
         string errorMessage;
@@ -50,6 +63,12 @@ interface Vm {
         uint256 publicKeyX;
         uint256 publicKeyY;
         uint256 privateKey;
+    }
+
+    struct FfiResult {
+        int32 exit_code;
+        bytes stdout;
+        bytes stderr;
     }
 
     // Set block.timestamp (newTimestamp)
@@ -115,6 +134,9 @@ interface Vm {
 
     // Performs a foreign function call via terminal, (stringInputs) => (result)
     function ffi(string[] calldata) external returns (bytes memory);
+
+    // Performs a foreign function call via terminal and returns the exit code, stdout, and stderr
+    function tryFfi(string[] calldata) external returns (FfiResult memory);
 
     // Set environment variables, (name, value)
     function setEnv(string calldata, string calldata) external;
@@ -550,6 +572,12 @@ interface Vm {
     /// Returns all rpc urls and their aliases as an array of structs
     function rpcUrlStructs() external returns (Rpc[] memory);
 
+    // Gets all the logs according to specified filter
+    function eth_getLogs(uint256, uint256, address, bytes32[] memory) external returns (EthGetLogs[] memory);
+
+    // Generic rpc call function
+    function rpc(string calldata, string calldata) external returns (bytes memory);
+
     function parseJson(string calldata, string calldata) external returns (bytes memory);
 
     function parseJson(string calldata) external returns (bytes memory);
@@ -583,6 +611,8 @@ interface Vm {
     function parseJsonBytes32(string calldata, string calldata) external returns (bytes32);
 
     function parseJsonBytes32Array(string calldata, string calldata) external returns (bytes32[] memory);
+
+    function serializeJson(string calldata, string calldata) external returns (string memory);
 
     function serializeBool(string calldata, string calldata, bool) external returns (string memory);
 
@@ -639,4 +669,13 @@ interface Vm {
 
     // Gets the map key and parent of a mapping at a given slot, for a given address.
     function getMappingKeyAndParentOf(address target, bytes32 slot) external returns (bool, bytes32, bytes32);
+
+    // Returns true if the given path points to an existing entity, else returns false
+    function exists(string calldata path) external returns (bool);
+
+    // Returns true if the path exists on disk and is pointing at a regular file, else returns false
+    function isFile(string calldata path) external returns (bool);
+
+    // Returns true if the path exists on disk and is pointing at a directory, else returns false
+    function isDir(string calldata path) external returns (bool);
 }

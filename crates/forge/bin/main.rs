@@ -9,6 +9,10 @@ mod opts;
 use cmd::{cache::CacheSubcommands, generate::GenerateSubcommands, watch};
 use opts::{Opts, Subcommands};
 
+#[cfg(not(target_env = "msvc"))]
+#[global_allocator]
+static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 fn main() -> Result<()> {
     utils::load_dotenv();
     handler::install()?;
@@ -31,7 +35,7 @@ fn main() -> Result<()> {
                 cmd.opts.args.silent,
                 cmd.json,
             ))?;
-            utils::block_on(cmd.run_script(Default::default()))
+            utils::block_on(cmd.run_script())
         }
         Subcommands::Coverage(cmd) => utils::block_on(cmd.run()),
         Subcommands::Bind(cmd) => cmd.run(),
@@ -42,7 +46,7 @@ fn main() -> Result<()> {
                 cmd.run().map(|_| ())
             }
         }
-        Subcommands::Debug(cmd) => utils::block_on(cmd.debug(Default::default())),
+        Subcommands::Debug(cmd) => utils::block_on(cmd.run()),
         Subcommands::VerifyContract(args) => utils::block_on(args.run()),
         Subcommands::VerifyCheck(args) => utils::block_on(args.run()),
         Subcommands::Cache(cmd) => match cmd.sub {

@@ -25,6 +25,10 @@ pub mod opts;
 
 use opts::{Opts, Subcommands, ToBaseArgs};
 
+#[cfg(not(target_env = "msvc"))]
+#[global_allocator]
+static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 #[tokio::main]
 async fn main() -> Result<()> {
     utils::load_dotenv();
@@ -485,6 +489,19 @@ async fn main() -> Result<()> {
             &mut std::io::stdout(),
         ),
         Subcommands::Logs(cmd) => cmd.run().await?,
+        Subcommands::DecodeTransaction { tx } => {
+            let tx = stdin::unwrap_line(tx)?;
+            let (tx, sig) = SimpleCast::decode_raw_transaction(&tx)?;
+
+            // Serialize tx, sig and constructed a merged json string
+            let mut tx = serde_json::to_value(&tx)?;
+            let tx_map = tx.as_object_mut().unwrap();
+            serde_json::to_value(sig)?.as_object().unwrap().iter().for_each(|(k, v)| {
+                tx_map.entry(k).or_insert(v.clone());
+            });
+
+            println!("{}", serde_json::to_string_pretty(&tx)?);
+        }
     };
     Ok(())
 }

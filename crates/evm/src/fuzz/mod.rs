@@ -20,10 +20,12 @@ use strategies::{
     build_initial_state, collect_state_from_call, fuzz_calldata, fuzz_calldata_from_state,
     EvmFuzzState,
 };
+use types::{CaseOutcome, CounterExampleOutcome, FuzzCase, FuzzOutcome};
 
 pub mod error;
 pub mod invariant;
 pub mod strategies;
+pub mod types;
 
 /// Wrapper around an [`Executor`] which provides fuzzing support using [`proptest`](https://docs.rs/proptest/1.0.0/proptest/).
 ///
@@ -79,12 +81,7 @@ impl<'a> FuzzedExecutor<'a> {
         // Stores coverage information for all fuzz cases
         let coverage: RefCell<Option<HitMaps>> = RefCell::default();
 
-        // Stores fuzz state for use with [fuzz_calldata_from_state]
-        let state: EvmFuzzState = if let Some(fork_db) = self.executor.backend().active_fork_db() {
-            build_initial_state(fork_db, &self.config.dictionary)
-        } else {
-            build_initial_state(self.executor.backend().mem_db(), &self.config.dictionary)
-        };
+        let state = self.build_fuzz_state();
 
         let mut weights = vec![];
         let dictionary_weight = self.config.dictionary.dictionary_weight.min(100);
@@ -101,72 +98,45 @@ impl<'a> FuzzedExecutor<'a> {
         let strat = proptest::strategy::Union::new_weighted(weights);
         debug!(func = ?func.name, should_fail, "fuzzing");
         let run_result = self.runner.clone().run(&strat, |calldata| {
-            let call = self
-                .executor
-                .call_raw(self.sender, address, calldata.0.clone(), 0.into())
-                .map_err(|_| TestCaseError::fail(FuzzError::FailedContractCall))?;
-            let state_changeset = call
-                .state_changeset
-                .as_ref()
-                .ok_or_else(|| TestCaseError::fail(FuzzError::EmptyChangeset))?;
+            let fuzz_res = self.single_fuzz(&state, address, should_fail, calldata)?;
 
-            // Build fuzzer state
-            collect_state_from_call(
-                &call.logs,
-                state_changeset,
-                state.clone(),
-                &self.config.dictionary,
-            );
+            match fuzz_res {
+                FuzzOutcome::Case(case) => {
+                    let mut first_case = first_case.borrow_mut();
+                    gas_by_case.borrow_mut().push((case.case.gas, case.case.stipend));
+                    if first_case.is_none() {
+                        first_case.replace(case.case);
+                    }
 
-            // When assume cheat code is triggered return a special string "FOUNDRY::ASSUME"
-            if call.result.as_ref() == ASSUME_MAGIC_RETURN_CODE {
-                return Err(TestCaseError::reject(FuzzError::AssumeReject))
-            }
+                    traces.replace(case.traces);
 
-            let success = self.executor.is_success(
-                address,
-                call.reverted,
-                state_changeset.clone(),
-                should_fail,
-            );
+                    if let Some(prev) = coverage.take() {
+                        // Safety: If `Option::or` evaluates to `Some`, then `call.coverage` must
+                        // necessarily also be `Some`
+                        coverage.replace(Some(prev.merge(case.coverage.unwrap())));
+                    } else {
+                        coverage.replace(case.coverage);
+                    }
 
-            if success {
-                let mut first_case = first_case.borrow_mut();
-                if first_case.is_none() {
-                    first_case.replace(FuzzCase {
-                        calldata,
-                        gas: call.gas_used,
-                        stipend: call.stipend,
-                    });
+                    Ok(())
                 }
-                gas_by_case.borrow_mut().push((call.gas_used, call.stipend));
-
-                traces.replace(call.traces);
-
-                if let Some(prev) = coverage.take() {
-                    // Safety: If `Option::or` evaluates to `Some`, then `call.coverage` must
-                    // necessarily also be `Some`
-                    coverage.replace(Some(prev.merge(call.coverage.unwrap())));
-                } else {
-                    coverage.replace(call.coverage);
+                FuzzOutcome::CounterExample(CounterExampleOutcome {
+                    exit_reason,
+                    counterexample: _counterexample,
+                    ..
+                }) => {
+                    let status = exit_reason;
+                    // We cannot use the calldata returned by the test runner in `TestError::Fail`,
+                    // since that input represents the last run case, which may not correspond with
+                    // our failure - when a fuzz case fails, proptest will try
+                    // to run at least one more case to find a minimal failure
+                    // case.
+                    let call_res = _counterexample.1.result.clone();
+                    *counterexample.borrow_mut() = _counterexample;
+                    Err(TestCaseError::fail(
+                        decode::decode_revert(&call_res, errors, Some(status)).unwrap_or_default(),
+                    ))
                 }
-
-                Ok(())
-            } else {
-                let status = call.exit_reason;
-                // We cannot use the calldata returned by the test runner in `TestError::Fail`,
-                // since that input represents the last run case, which may not correspond with our
-                // failure - when a fuzz case fails, proptest will try to run at least one more
-                // case to find a minimal failure case.
-                *counterexample.borrow_mut() = (calldata, call);
-                Err(TestCaseError::fail(
-                    decode::decode_revert(
-                        counterexample.borrow().1.result.as_ref(),
-                        errors,
-                        Some(status),
-                    )
-                    .unwrap_or_default(),
-                ))
             }
         });
 
@@ -215,6 +185,72 @@ impl<'a> FuzzedExecutor<'a> {
         }
 
         result
+    }
+
+    /// Granular and single-step function that runs only one fuzz and returns either a `CaseOutcome`
+    /// or a `CounterExampleOutcome`
+    pub fn single_fuzz(
+        &self,
+        state: &EvmFuzzState,
+        address: Address,
+        should_fail: bool,
+        calldata: ethers::types::Bytes,
+    ) -> Result<FuzzOutcome, TestCaseError> {
+        let call = self
+            .executor
+            .call_raw(self.sender, address, calldata.0.clone(), 0.into())
+            .map_err(|_| TestCaseError::fail(FuzzError::FailedContractCall))?;
+        let state_changeset = call
+            .state_changeset
+            .as_ref()
+            .ok_or_else(|| TestCaseError::fail(FuzzError::EmptyChangeset))?;
+
+        // Build fuzzer state
+        collect_state_from_call(
+            &call.logs,
+            state_changeset,
+            state.clone(),
+            &self.config.dictionary,
+        );
+
+        // When assume cheat code is triggered return a special string "FOUNDRY::ASSUME"
+        if call.result.as_ref() == ASSUME_MAGIC_RETURN_CODE {
+            return Err(TestCaseError::reject(FuzzError::AssumeReject))
+        }
+
+        let breakpoints = call
+            .cheatcodes
+            .as_ref()
+            .map_or_else(Default::default, |cheats| cheats.breakpoints.clone());
+
+        let success =
+            self.executor.is_success(address, call.reverted, state_changeset.clone(), should_fail);
+
+        if success {
+            Ok(FuzzOutcome::Case(CaseOutcome {
+                case: FuzzCase { calldata, gas: call.gas_used, stipend: call.stipend },
+                traces: call.traces,
+                coverage: call.coverage,
+                debug: call.debug,
+                breakpoints,
+            }))
+        } else {
+            Ok(FuzzOutcome::CounterExample(CounterExampleOutcome {
+                debug: call.debug.clone(),
+                exit_reason: call.exit_reason,
+                counterexample: (calldata, call),
+                breakpoints,
+            }))
+        }
+    }
+
+    /// Stores fuzz state for use with [fuzz_calldata_from_state]
+    pub fn build_fuzz_state(&self) -> EvmFuzzState {
+        if let Some(fork_db) = self.executor.backend.active_fork_db() {
+            build_initial_state(fork_db, &self.config.dictionary)
+        } else {
+            build_initial_state(self.executor.backend.mem_db(), &self.config.dictionary)
+        }
     }
 }
 
@@ -372,25 +408,30 @@ pub struct FuzzedCases {
 }
 
 impl FuzzedCases {
+    #[inline]
     pub fn new(mut cases: Vec<FuzzCase>) -> Self {
         cases.sort_by_key(|c| c.gas);
         Self { cases }
     }
 
+    #[inline]
     pub fn cases(&self) -> &[FuzzCase] {
         &self.cases
     }
 
+    #[inline]
     pub fn into_cases(self) -> Vec<FuzzCase> {
         self.cases
     }
 
     /// Get the last [FuzzCase]
+    #[inline]
     pub fn last(&self) -> Option<&FuzzCase> {
         self.cases.last()
     }
 
     /// Returns the median gas of all test cases
+    #[inline]
     pub fn median_gas(&self, with_stipend: bool) -> u64 {
         let mut values = self.gas_values(with_stipend);
         values.sort_unstable();
@@ -398,12 +439,14 @@ impl FuzzedCases {
     }
 
     /// Returns the average gas use of all test cases
+    #[inline]
     pub fn mean_gas(&self, with_stipend: bool) -> u64 {
         let mut values = self.gas_values(with_stipend);
         values.sort_unstable();
         calc::mean(&values).as_u64()
     }
 
+    #[inline]
     fn gas_values(&self, with_stipend: bool) -> Vec<u64> {
         self.cases
             .iter()
@@ -412,16 +455,19 @@ impl FuzzedCases {
     }
 
     /// Returns the case with the highest gas usage
+    #[inline]
     pub fn highest(&self) -> Option<&FuzzCase> {
         self.cases.last()
     }
 
     /// Returns the case with the lowest gas usage
+    #[inline]
     pub fn lowest(&self) -> Option<&FuzzCase> {
         self.cases.first()
     }
 
     /// Returns the highest amount of gas spent on a fuzz case
+    #[inline]
     pub fn highest_gas(&self, with_stipend: bool) -> u64 {
         self.highest()
             .map(|c| if with_stipend { c.gas } else { c.gas - c.stipend })
@@ -429,18 +475,8 @@ impl FuzzedCases {
     }
 
     /// Returns the lowest amount of gas spent on a fuzz case
+    #[inline]
     pub fn lowest_gas(&self) -> u64 {
         self.lowest().map(|c| c.gas).unwrap_or_default()
     }
-}
-
-/// Data of a single fuzz test case
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct FuzzCase {
-    /// The calldata used for this fuzz test
-    pub calldata: Bytes,
-    /// Consumed gas
-    pub gas: u64,
-    /// The initial gas stipend for the transaction
-    pub stipend: u64,
 }

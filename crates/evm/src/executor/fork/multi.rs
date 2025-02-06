@@ -9,10 +9,10 @@ use crate::{
 };
 use ethers::{
     abi::{AbiDecode, AbiEncode, AbiError},
-    providers::{Http, Provider, RetryClient},
+    providers::Provider,
     types::{BlockId, BlockNumber},
 };
-use foundry_common::ProviderBuilder;
+use foundry_common::{runtime_client::RuntimeClient, ProviderBuilder};
 use foundry_config::Config;
 use futures::{
     channel::mpsc::{channel, Receiver, Sender},
@@ -89,12 +89,12 @@ impl MultiFork {
         // spawn a light-weight thread with a thread-local async runtime just for
         // sending and receiving data from the remote client(s)
         std::thread::Builder::new()
-            .name("multi-fork-backend-thread".to_string())
+            .name("multi-fork-backend".into())
             .spawn(move || {
                 let rt = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
-                    .expect("failed to create multi-fork-backend-thread tokio runtime");
+                    .expect("failed to build tokio runtime");
 
                 rt.block_on(async move {
                     // flush cache every 60s, this ensures that long-running fork tests get their
@@ -105,7 +105,7 @@ impl MultiFork {
                     handler.await
                 });
             })
-            .expect("failed to spawn multi fork handler thread");
+            .expect("failed to spawn thread");
         trace!(target: "fork::multi", "spawned MultiForkHandler thread");
         fork
     }
@@ -168,7 +168,7 @@ impl MultiFork {
     }
 }
 
-type Handler = BackendHandler<Arc<Provider<RetryClient<Http>>>>;
+type Handler = BackendHandler<Arc<Provider<RuntimeClient>>>;
 
 type CreateFuture = Pin<Box<dyn Future<Output = eyre::Result<(CreatedFork, Handler)>> + Send>>;
 type CreateSender = OneshotSender<eyre::Result<(ForkId, SharedBackend, Env)>>;
@@ -408,9 +408,12 @@ impl Future for MultiForkHandler {
             trace!(target: "fork::multi", "tick flushing caches");
             let forks = pin.forks.values().map(|f| f.backend.clone()).collect::<Vec<_>>();
             // flush this on new thread to not block here
-            std::thread::spawn(move || {
-                forks.into_iter().for_each(|fork| fork.flush_cache());
-            });
+            std::thread::Builder::new()
+                .name("flusher".into())
+                .spawn(move || {
+                    forks.into_iter().for_each(|fork| fork.flush_cache());
+                })
+                .expect("failed to spawn thread");
         }
 
         Poll::Pending
@@ -498,7 +501,7 @@ async fn create_fork(
 
     // determine the cache path if caching is enabled
     let cache_path = if fork.enable_caching {
-        Config::foundry_block_cache_dir(ru256_to_u256(meta.cfg_env.chain_id).as_u64(), number)
+        Config::foundry_block_cache_dir(meta.cfg_env.chain_id, number)
     } else {
         None
     };

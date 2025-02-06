@@ -1,5 +1,5 @@
-use super::{bail, ensure, fmt_err, Cheatcodes, Result};
-use crate::{abi::HEVMCalls, executor::inspector::cheatcodes::util};
+use super::{bail, ensure, fmt_err, util::MAGIC_SKIP_BYTES, Cheatcodes, Error, Result};
+use crate::{abi::HEVMCalls, executor::inspector::cheatcodes::parse};
 use ethers::{
     abi::{self, AbiEncode, JsonAbi, ParamType, Token},
     prelude::artifacts::CompactContractBytecode,
@@ -7,9 +7,53 @@ use ethers::{
 };
 use foundry_common::{fmt::*, fs, get_artifact_path};
 use foundry_config::fs_permissions::FsAccessKind;
+use revm::{Database, EVMData};
 use serde::Deserialize;
 use serde_json::Value;
 use std::{collections::BTreeMap, env, path::Path, process::Command};
+
+/// Invokes a `Command` with the given args and returns the exit code, stdout, and stderr.
+///
+/// If stdout or stderr are valid hex, it returns the hex decoded value.
+fn try_ffi(state: &Cheatcodes, args: &[String]) -> Result {
+    if args.is_empty() || args[0].is_empty() {
+        bail!("Can't execute empty command");
+    }
+    let name = &args[0];
+    let mut cmd = Command::new(name);
+    if args.len() > 1 {
+        cmd.args(&args[1..]);
+    }
+
+    trace!(?args, "invoking try_ffi");
+
+    let output = cmd
+        .current_dir(&state.config.root)
+        .output()
+        .map_err(|err| fmt_err!("Failed to execute command: {err}"))?;
+
+    let exit_code = output.status.code().unwrap_or(1);
+
+    let trimmed_stdout = String::from_utf8(output.stdout)?;
+    let trimmed_stdout = trimmed_stdout.trim();
+
+    // The stdout might be encoded on valid hex, or it might just be a string,
+    // so we need to determine which it is to avoid improperly encoding later.
+    let encoded_stdout: Token = if let Ok(hex) = hex::decode(trimmed_stdout) {
+        Token::Bytes(hex)
+    } else {
+        Token::Bytes(trimmed_stdout.into())
+    };
+
+    let res = abi::encode(&[Token::Tuple(vec![
+        Token::Int(exit_code.into()),
+        encoded_stdout,
+        // We can grab the stderr output as-is.
+        Token::Bytes(output.stderr),
+    ])]);
+
+    Ok(res.into())
+}
 
 /// Invokes a `Command` with the given args and returns the abi encoded response
 ///
@@ -38,7 +82,7 @@ fn ffi(state: &Cheatcodes, args: &[String]) -> Result {
 
     let output = String::from_utf8(output.stdout)?;
     let trimmed = output.trim();
-    if let Ok(hex) = hex::decode(trimmed.strip_prefix("0x").unwrap_or(trimmed)) {
+    if let Ok(hex) = hex::decode(trimmed) {
         Ok(abi::encode(&[Token::Bytes(hex)]).into())
     } else {
         Ok(trimmed.encode().into())
@@ -147,9 +191,9 @@ fn get_env(key: &str, ty: ParamType, delim: Option<&str>, default: Option<String
         })
     })?;
     if let Some(d) = delim {
-        util::parse_array(val.split(d).map(str::trim), &ty)
+        parse::parse_array(val.split(d).map(str::trim), &ty)
     } else {
-        util::parse(&val, &ty)
+        parse::parse(&val, &ty)
     }
 }
 
@@ -158,7 +202,7 @@ fn get_env(key: &str, ty: ParamType, delim: Option<&str>, default: Option<String
 /// The function is designed to run recursively, so that in case of an object
 /// it will call itself to convert each of it's value and encode the whole as a
 /// Tuple
-fn value_to_token(value: &Value) -> Result<Token> {
+pub fn value_to_token(value: &Value) -> Result<Token> {
     match value {
         Value::Null => Ok(Token::FixedBytes(vec![0; 32])),
         Value::Bool(boolean) => Ok(Token::Bool(*boolean)),
@@ -297,11 +341,11 @@ fn parse_json(json_str: &str, key: &str, coerce: Option<ParamType>) -> Result {
                     s.retain(|c: char| c != '"');
                     s
                 };
-                trace!(target : "forge::evm", ?values, "parsign values");
+                trace!(target : "forge::evm", ?values, "parsing values");
                 return if let Some(array) = values[0].as_array() {
-                    util::parse_array(array.iter().map(to_string), &coercion_type)
+                    parse::parse_array(array.iter().map(to_string), &coercion_type)
                 } else {
-                    util::parse(&to_string(values[0]), &coercion_type)
+                    parse::parse(&to_string(values[0]), &coercion_type)
                 }
             }
 
@@ -344,29 +388,41 @@ fn parse_json_keys(json_str: &str, key: &str) -> Result {
     Ok(abi_encoded.into())
 }
 
-/// Serializes a key:value pair to a specific object. By calling this function multiple times,
+/// Serializes a key:value pair to a specific object. If the key is None, the value is expected to
+/// be an object, which will be set as the root object for the provided object key, overriding
+/// the whole root object if the object key already exists. By calling this function multiple times,
 /// the user can serialize multiple KV pairs to the same object. The value can be of any type, even
-/// a new object in itself. The function will return
-/// a stringified version of the object, so that the user can use that as a value to a new
-/// invocation of the same function with a new object key. This enables the user to reuse the same
-/// function to crate arbitrarily complex object structures (JSON).
+/// a new object in itself. The function will return a stringified version of the object, so that
+/// the user can use that as a value to a new invocation of the same function with a new object key.
+/// This enables the user to reuse the same function to crate arbitrarily complex object structures
+/// (JSON).
 fn serialize_json(
     state: &mut Cheatcodes,
     object_key: &str,
-    value_key: &str,
+    value_key: Option<&str>,
     value: &str,
 ) -> Result {
-    let parsed_value =
-        serde_json::from_str(value).unwrap_or_else(|_| Value::String(value.to_string()));
-    let json = if let Some(serialization) = state.serialized_jsons.get_mut(object_key) {
-        serialization.insert(value_key.to_string(), parsed_value);
-        serialization.clone()
+    let json = if let Some(key) = value_key {
+        let parsed_value =
+            serde_json::from_str(value).unwrap_or_else(|_| Value::String(value.to_string()));
+        if let Some(serialization) = state.serialized_jsons.get_mut(object_key) {
+            serialization.insert(key.to_string(), parsed_value);
+            serialization.clone()
+        } else {
+            let mut serialization = BTreeMap::new();
+            serialization.insert(key.to_string(), parsed_value);
+            state.serialized_jsons.insert(object_key.to_string(), serialization.clone());
+            serialization.clone()
+        }
     } else {
-        let mut serialization = BTreeMap::new();
-        serialization.insert(value_key.to_string(), parsed_value);
+        // value must be a JSON object
+        let parsed_value: BTreeMap<String, Value> = serde_json::from_str(value)
+            .map_err(|err| fmt_err!("Failed to parse JSON object: {err}"))?;
+        let serialization = parsed_value;
         state.serialized_jsons.insert(object_key.to_string(), serialization.clone());
         serialization.clone()
     };
+
     let stringified = serde_json::to_string(&json)
         .map_err(|err| fmt_err!("Failed to stringify hashmap: {err}"))?;
     Ok(abi::encode(&[Token::String(stringified)]).into())
@@ -439,7 +495,7 @@ fn key_exists(json_str: &str, key: &str) -> Result {
     let json: Value =
         serde_json::from_str(json_str).map_err(|e| format!("Could not convert to JSON: {e}"))?;
     let values = jsonpath_lib::select(&json, &canonicalize_json_key(key))?;
-    let exists = util::parse(&(!values.is_empty()).to_string(), &ParamType::Bool)?;
+    let exists = parse::parse(&(!values.is_empty()).to_string(), &ParamType::Bool)?;
     Ok(exists)
 }
 
@@ -451,12 +507,39 @@ fn sleep(milliseconds: &U256) -> Result {
     Ok(Default::default())
 }
 
+/// Skip the current test, by returning a magic value that will be checked by the test runner.
+pub fn skip(state: &mut Cheatcodes, depth: u64, skip: bool) -> Result {
+    if !skip {
+        return Ok(b"".into())
+    }
+
+    // Skip should not work if called deeper than at test level.
+    // As we're not returning the magic skip bytes, this will cause a test failure.
+    if depth > 1 {
+        return Err(Error::custom("The skip cheatcode can only be used at test level"))
+    }
+
+    state.skip = true;
+    Err(Error::custom_bytes(MAGIC_SKIP_BYTES))
+}
+
 #[instrument(level = "error", name = "ext", target = "evm::cheatcodes", skip_all)]
-pub fn apply(state: &mut Cheatcodes, call: &HEVMCalls) -> Option<Result> {
+pub fn apply<DB: Database>(
+    state: &mut Cheatcodes,
+    data: &mut EVMData<'_, DB>,
+    call: &HEVMCalls,
+) -> Option<Result> {
     Some(match call {
         HEVMCalls::Ffi(inner) => {
             if state.config.ffi {
                 ffi(state, &inner.0)
+            } else {
+                Err(fmt_err!("FFI disabled: run again with `--ffi` if you want to allow tests to call external scripts."))
+            }
+        }
+        HEVMCalls::TryFfi(inner) => {
+            if state.config.ffi {
+                try_ffi(state, &inner.0)
             } else {
                 Err(fmt_err!("FFI disabled: run again with `--ffi` if you want to allow tests to call external scripts."))
             }
@@ -584,52 +667,54 @@ pub fn apply(state: &mut Cheatcodes, call: &HEVMCalls) -> Option<Result> {
         HEVMCalls::ParseJsonBytes32Array(inner) => {
             parse_json(&inner.0, &inner.1, Some(ParamType::FixedBytes(32)))
         }
+        HEVMCalls::SerializeJson(inner) => serialize_json(state, &inner.0, None, &inner.1.pretty()),
         HEVMCalls::SerializeBool0(inner) => {
-            serialize_json(state, &inner.0, &inner.1, &inner.2.pretty())
+            serialize_json(state, &inner.0, Some(&inner.1), &inner.2.pretty())
         }
         HEVMCalls::SerializeBool1(inner) => {
-            serialize_json(state, &inner.0, &inner.1, &array_eval_to_str(&inner.2))
+            serialize_json(state, &inner.0, Some(&inner.1), &array_eval_to_str(&inner.2))
         }
         HEVMCalls::SerializeUint0(inner) => {
-            serialize_json(state, &inner.0, &inner.1, &inner.2.pretty())
+            serialize_json(state, &inner.0, Some(&inner.1), &inner.2.pretty())
         }
         HEVMCalls::SerializeUint1(inner) => {
-            serialize_json(state, &inner.0, &inner.1, &array_eval_to_str(&inner.2))
+            serialize_json(state, &inner.0, Some(&inner.1), &array_eval_to_str(&inner.2))
         }
         HEVMCalls::SerializeInt0(inner) => {
-            serialize_json(state, &inner.0, &inner.1, &inner.2.pretty())
+            serialize_json(state, &inner.0, Some(&inner.1), &inner.2.pretty())
         }
         HEVMCalls::SerializeInt1(inner) => {
-            serialize_json(state, &inner.0, &inner.1, &array_eval_to_str(&inner.2))
+            serialize_json(state, &inner.0, Some(&inner.1), &array_eval_to_str(&inner.2))
         }
         HEVMCalls::SerializeAddress0(inner) => {
-            serialize_json(state, &inner.0, &inner.1, &inner.2.pretty())
+            serialize_json(state, &inner.0, Some(&inner.1), &inner.2.pretty())
         }
         HEVMCalls::SerializeAddress1(inner) => {
-            serialize_json(state, &inner.0, &inner.1, &array_str_to_str(&inner.2))
+            serialize_json(state, &inner.0, Some(&inner.1), &array_str_to_str(&inner.2))
         }
         HEVMCalls::SerializeBytes320(inner) => {
-            serialize_json(state, &inner.0, &inner.1, &inner.2.pretty())
+            serialize_json(state, &inner.0, Some(&inner.1), &inner.2.pretty())
         }
         HEVMCalls::SerializeBytes321(inner) => {
-            serialize_json(state, &inner.0, &inner.1, &array_str_to_str(&inner.2))
+            serialize_json(state, &inner.0, Some(&inner.1), &array_str_to_str(&inner.2))
         }
         HEVMCalls::SerializeString0(inner) => {
-            serialize_json(state, &inner.0, &inner.1, &inner.2.pretty())
+            serialize_json(state, &inner.0, Some(&inner.1), &inner.2.pretty())
         }
         HEVMCalls::SerializeString1(inner) => {
-            serialize_json(state, &inner.0, &inner.1, &array_str_to_str(&inner.2))
+            serialize_json(state, &inner.0, Some(&inner.1), &array_str_to_str(&inner.2))
         }
         HEVMCalls::SerializeBytes0(inner) => {
-            serialize_json(state, &inner.0, &inner.1, &inner.2.pretty())
+            serialize_json(state, &inner.0, Some(&inner.1), &inner.2.pretty())
         }
         HEVMCalls::SerializeBytes1(inner) => {
-            serialize_json(state, &inner.0, &inner.1, &array_str_to_str(&inner.2))
+            serialize_json(state, &inner.0, Some(&inner.1), &array_str_to_str(&inner.2))
         }
         HEVMCalls::Sleep(inner) => sleep(&inner.0),
         HEVMCalls::WriteJson0(inner) => write_json(state, &inner.0, &inner.1, None),
         HEVMCalls::WriteJson1(inner) => write_json(state, &inner.0, &inner.1, Some(&inner.2)),
         HEVMCalls::KeyExists(inner) => key_exists(&inner.0, &inner.1),
+        HEVMCalls::Skip(inner) => skip(state, data.journaled_state.depth(), inner.0),
         _ => return None,
     })
 }
