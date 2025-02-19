@@ -1,27 +1,25 @@
 //! svm sanity checks
 
-use foundry_test_utils::{forgetest_init, TestCommand, TestProject};
 use semver::Version;
-use svm::{self, Platform};
+use svm::Platform;
 
-/// The latest solc release
+/// The latest Solc release.
 ///
-/// solc to foundry release process:
-///     1. new solc release
-///     2. svm updated with all build info
-///     3. svm bumped in ethers-rs
-///     4. ethers bumped in foundry + update the `LATEST_SOLC`
-const LATEST_SOLC: Version = Version::new(0, 8, 21);
+/// Solc to Foundry release process:
+/// 1. new solc release
+/// 2. svm updated with all build info
+/// 3. svm bumped in foundry-compilers
+/// 4. foundry-compilers update with any breaking changes
+/// 5. upgrade the `LATEST_SOLC`
+const LATEST_SOLC: Version = Version::new(0, 8, 27);
 
 macro_rules! ensure_svm_releases {
-    ($($test:ident => $platform:ident),*) => {
-        $(
+    ($($test:ident => $platform:ident),* $(,)?) => {$(
         #[tokio::test(flavor = "multi_thread")]
         async fn $test() {
             ensure_latest_release(Platform::$platform).await
         }
-        )*
-    };
+    )*};
 }
 
 async fn ensure_latest_release(platform: Platform) {
@@ -30,7 +28,7 @@ async fn ensure_latest_release(platform: Platform) {
         .unwrap_or_else(|err| panic!("Could not fetch releases for {platform}: {err:?}"));
     assert!(
         releases.releases.contains_key(&LATEST_SOLC),
-        "platform {platform:?} is missing solc info {LATEST_SOLC}"
+        "platform {platform:?} is missing solc info for v{LATEST_SOLC}"
     );
 }
 
@@ -44,27 +42,33 @@ ensure_svm_releases!(
 );
 
 // Ensures we can always test with the latest solc build
-forgetest_init!(can_test_with_latest_solc, |prj: TestProject, mut cmd: TestCommand| {
-    prj.inner()
-        .add_test(
-            "Counter",
-            r#"
-// SPDX-License-Identifier: UNLICENSED
-pragma solidity =<VERSION>;
+forgetest_init!(can_test_with_latest_solc, |prj, cmd| {
+    let src = format!(
+        r#"
+pragma solidity ={LATEST_SOLC};
 
 import "forge-std/Test.sol";
 
-contract CounterTest is Test {
+contract CounterTest is Test {{
+    function testAssert() public {{
+        assert(true);
+    }}
+}}
+    "#
+    );
+    prj.add_test("Counter", &src).unwrap();
+    cmd.arg("test").assert_success().stdout_eq(str![[r#"
+...
+Ran 1 test for test/Counter.sol:CounterTest
+[PASS] testAssert() ([GAS])
+Suite result: ok. 1 passed; 0 failed; 0 skipped; [ELAPSED]
+...
+Ran 2 tests for test/Counter.t.sol:CounterTest
+[PASS] testFuzz_SetNumber(uint256) (runs: 256, [AVG_GAS])
+[PASS] test_Increment() ([GAS])
+Suite result: ok. 2 passed; 0 failed; 0 skipped; [ELAPSED]
 
-    function testAssert() public {
-       assert(true);
-    }
-}
-   "#
-            .replace("<VERSION>", &LATEST_SOLC.to_string()),
-        )
-        .unwrap();
+Ran 2 test suites [ELAPSED]: 3 tests passed, 0 failed, 0 skipped (3 total tests)
 
-    cmd.args(["test"]);
-    cmd.stdout().contains("[PASS]")
+"#]]);
 });

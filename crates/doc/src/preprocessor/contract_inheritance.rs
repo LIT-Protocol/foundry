@@ -1,21 +1,24 @@
-use forge_fmt::solang_ext::SafeUnwrap;
-
 use super::{Preprocessor, PreprocessorId};
 use crate::{document::DocumentContent, Document, ParseSource, PreprocessorOutput};
-use std::{collections::HashMap, path::PathBuf};
+use alloy_primitives::map::HashMap;
+use forge_fmt::solang_ext::SafeUnwrap;
+use std::path::PathBuf;
 
 /// [ContractInheritance] preprocessor id.
 pub const CONTRACT_INHERITANCE_ID: PreprocessorId = PreprocessorId("contract_inheritance");
 
 /// The contract inheritance preprocessor.
+///
 /// It matches the documents with inner [`ParseSource::Contract`](crate::ParseSource) elements,
 /// iterates over their [Base](solang_parser::pt::Base)s and attempts
 /// to link them with the paths of the other contract documents.
 ///
 /// This preprocessor writes to [Document]'s context.
-#[derive(Default, Debug)]
-#[non_exhaustive]
-pub struct ContractInheritance;
+#[derive(Debug, Default)]
+pub struct ContractInheritance {
+    /// Whether to capture inherited contracts from libraries.
+    pub include_libraries: bool,
+}
 
 impl Preprocessor for ContractInheritance {
     fn id(&self) -> PreprocessorId {
@@ -52,6 +55,9 @@ impl Preprocessor for ContractInheritance {
 impl ContractInheritance {
     fn try_link_base(&self, base: &str, documents: &Vec<Document>) -> Option<PathBuf> {
         for candidate in documents {
+            if candidate.from_library && !self.include_libraries {
+                continue;
+            }
             if let DocumentContent::Single(ref item) = candidate.content {
                 if let ParseSource::Contract(ref contract) = item.source {
                     if base == contract.name.safe_unwrap().name {

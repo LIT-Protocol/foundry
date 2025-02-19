@@ -1,11 +1,12 @@
 use super::{install, watch::WatchArgs};
 use clap::Parser;
-use ethers::solc::{Project, ProjectCompileOutput};
 use eyre::Result;
-use foundry_cli::{opts::CoreBuildArgs, utils::LoadConfig};
-use foundry_common::{
-    compile,
-    compile::{ProjectCompiler, SkipBuildFilter},
+use foundry_cli::{opts::BuildOpts, utils::LoadConfig};
+use foundry_common::{compile::ProjectCompiler, shell};
+use foundry_compilers::{
+    compilers::{multi::MultiCompilerLanguage, Language},
+    utils::source_files_iter,
+    Project, ProjectCompileOutput,
 };
 use foundry_config::{
     figment::{
@@ -17,9 +18,9 @@ use foundry_config::{
     Config,
 };
 use serde::Serialize;
-use watchexec::config::{InitConfig, RuntimeConfig};
+use std::path::PathBuf;
 
-foundry_config::merge_impl_figment_convert!(BuildArgs, args);
+foundry_config::merge_impl_figment_convert!(BuildArgs, build);
 
 /// CLI arguments for `forge build`.
 ///
@@ -27,80 +28,91 @@ foundry_config::merge_impl_figment_convert!(BuildArgs, args);
 /// In order to override them in the foundry `Config` they need to be merged into an existing
 /// `figment::Provider`, like `foundry_config::Config` is.
 ///
-/// # Example
-///
-/// ```
-/// use foundry_cli::cmd::forge::build::BuildArgs;
-/// use foundry_config::Config;
-/// # fn t(args: BuildArgs) {
-/// let config = Config::from(&args);
-/// # }
-/// ```
-///
 /// `BuildArgs` implements `figment::Provider` in which all config related fields are serialized and
 /// then merged into an existing `Config`, effectively overwriting them.
 ///
 /// Some arguments are marked as `#[serde(skip)]` and require manual processing in
 /// `figment::Provider` implementation
-#[derive(Debug, Clone, Parser, Serialize, Default)]
-#[clap(next_help_heading = "Build options", about = None, long_about = None)] // override doc
+#[derive(Clone, Debug, Default, Serialize, Parser)]
+#[command(next_help_heading = "Build options", about = None, long_about = None)] // override doc
 pub struct BuildArgs {
+    /// Build source files from specified paths.
+    #[serde(skip)]
+    pub paths: Option<Vec<PathBuf>>,
+
     /// Print compiled contract names.
-    #[clap(long)]
+    #[arg(long)]
     #[serde(skip)]
     pub names: bool,
 
     /// Print compiled contract sizes.
-    #[clap(long)]
+    /// Constructor argument length is not included in the calculation of initcode size.
+    #[arg(long)]
     #[serde(skip)]
     pub sizes: bool,
 
-    /// Skip building files whose names contain the given filter.
-    ///
-    /// `test` and `script` are aliases for `.t.sol` and `.s.sol`.
-    #[clap(long, num_args(1..))]
+    /// Ignore initcode contract bytecode size limit introduced by EIP-3860.
+    #[arg(long, alias = "ignore-initcode-size")]
     #[serde(skip)]
-    pub skip: Option<Vec<SkipBuildFilter>>,
+    pub ignore_eip_3860: bool,
 
-    #[clap(flatten)]
+    #[command(flatten)]
     #[serde(flatten)]
-    pub args: CoreBuildArgs,
+    pub build: BuildOpts,
 
-    #[clap(flatten)]
+    #[command(flatten)]
     #[serde(skip)]
     pub watch: WatchArgs,
 }
 
 impl BuildArgs {
     pub fn run(self) -> Result<ProjectCompileOutput> {
-        let mut config = self.try_load_config_emit_warnings()?;
-        let mut project = config.project()?;
+        let mut config = self.load_config()?;
 
-        if install::install_missing_dependencies(&mut config, self.args.silent) &&
-            config.auto_detect_remappings
-        {
+        if install::install_missing_dependencies(&mut config) && config.auto_detect_remappings {
             // need to re-configure here to also catch additional remappings
-            config = self.load_config();
-            project = config.project()?;
+            config = self.load_config()?;
         }
 
-        let filters = self.skip.unwrap_or_default();
+        let project = config.project()?;
 
-        if self.args.silent {
-            compile::suppress_compile_with_filter(&project, filters)
-        } else {
-            let compiler = ProjectCompiler::with_filter(self.names, self.sizes, filters);
-            compiler.compile(&project)
+        // Collect sources to compile if build subdirectories specified.
+        let mut files = vec![];
+        if let Some(paths) = &self.paths {
+            for path in paths {
+                let joined = project.root().join(path);
+                let path = if joined.exists() { &joined } else { path };
+                files.extend(source_files_iter(path, MultiCompilerLanguage::FILE_EXTENSIONS));
+            }
+            if files.is_empty() {
+                eyre::bail!("No source files found in specified build paths.")
+            }
         }
+
+        let format_json = shell::is_json();
+        let compiler = ProjectCompiler::new()
+            .files(files)
+            .print_names(self.names)
+            .print_sizes(self.sizes)
+            .ignore_eip_3860(self.ignore_eip_3860)
+            .bail(!format_json);
+
+        let output = compiler.compile(&project)?;
+
+        if format_json && !self.names && !self.sizes {
+            sh_println!("{}", serde_json::to_string_pretty(&output.output())?)?;
+        }
+
+        Ok(output)
     }
 
     /// Returns the `Project` for the current workspace
     ///
     /// This loads the `foundry_config::Config` for the current workspace (see
-    /// [`utils::find_project_root_path`] and merges the cli `BuildArgs` into it before returning
+    /// [`utils::find_project_root`] and merges the cli `BuildArgs` into it before returning
     /// [`foundry_config::Config::project()`]
     pub fn project(&self) -> Result<Project> {
-        self.args.project()
+        self.build.project()
     }
 
     /// Returns whether `BuildArgs` was configured with `--watch`
@@ -110,11 +122,13 @@ impl BuildArgs {
 
     /// Returns the [`watchexec::InitConfig`] and [`watchexec::RuntimeConfig`] necessary to
     /// bootstrap a new [`watchexe::Watchexec`] loop.
-    pub(crate) fn watchexec_config(&self) -> Result<(InitConfig, RuntimeConfig)> {
-        // use the path arguments or if none where provided the `src` dir
+    pub(crate) fn watchexec_config(&self) -> Result<watchexec::Config> {
+        // Use the path arguments or if none where provided the `src`, `test` and `script`
+        // directories as well as the `foundry.toml` configuration file.
         self.watch.watchexec_config(|| {
-            let config = Config::from(self);
-            vec![config.src, config.test, config.script]
+            let config = self.load_config()?;
+            let foundry_toml: PathBuf = config.root.join(Config::FILE_NAME);
+            Ok([config.src, config.test, config.script, foundry_toml])
         })
     }
 }
@@ -138,27 +152,10 @@ impl Provider for BuildArgs {
             dict.insert("sizes".to_string(), true.into());
         }
 
+        if self.ignore_eip_3860 {
+            dict.insert("ignore_eip_3860".to_string(), true.into());
+        }
+
         Ok(Map::from([(Config::selected_profile(), dict)]))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn can_parse_build_filters() {
-        let args: BuildArgs = BuildArgs::parse_from(["foundry-cli", "--skip", "tests"]);
-        assert_eq!(args.skip, Some(vec![SkipBuildFilter::Tests]));
-
-        let args: BuildArgs = BuildArgs::parse_from(["foundry-cli", "--skip", "scripts"]);
-        assert_eq!(args.skip, Some(vec![SkipBuildFilter::Scripts]));
-
-        let args: BuildArgs =
-            BuildArgs::parse_from(["foundry-cli", "--skip", "tests", "--skip", "scripts"]);
-        assert_eq!(args.skip, Some(vec![SkipBuildFilter::Tests, SkipBuildFilter::Scripts]));
-
-        let args: BuildArgs = BuildArgs::parse_from(["foundry-cli", "--skip", "tests", "scripts"]);
-        assert_eq!(args.skip, Some(vec![SkipBuildFilter::Tests, SkipBuildFilter::Scripts]));
     }
 }

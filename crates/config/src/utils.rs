@@ -1,47 +1,47 @@
 //! Utility functions
 
 use crate::Config;
-use ethers_core::types::{serde_helpers::Numeric, U256};
-use ethers_solc::remappings::{Remapping, RemappingError};
+use alloy_primitives::U256;
 use figment::value::Value;
+use foundry_compilers::artifacts::{
+    remappings::{Remapping, RemappingError},
+    EvmVersion,
+};
+use revm_primitives::SpecId;
 use serde::{de::Error, Deserialize, Deserializer};
 use std::{
+    io,
     path::{Path, PathBuf},
     str::FromStr,
 };
-use toml_edit::{Document, Item};
 
-/// Loads the config for the current project workspace
-pub fn load_config() -> Config {
+// TODO: Why do these exist separately from `Config::load`?
+
+/// Loads the config for the current project workspace.
+pub fn load_config() -> eyre::Result<Config> {
     load_config_with_root(None)
 }
 
-/// Loads the config for the current project workspace or the provided root path
-pub fn load_config_with_root(root: Option<PathBuf>) -> Config {
-    if let Some(root) = root {
-        Config::load_with_root(root)
-    } else {
-        Config::load_with_root(find_project_root_path(None).unwrap())
-    }
-    .sanitized()
+/// Loads the config for the current project workspace or the provided root path.
+pub fn load_config_with_root(root: Option<&Path>) -> eyre::Result<Config> {
+    let root = match root {
+        Some(root) => root,
+        None => &find_project_root(None)?,
+    };
+    Ok(Config::load_with_root(root)?.sanitized())
 }
 
-/// Returns the path of the top-level directory of the working git tree. If there is no working
-/// tree, an error is returned.
-pub fn find_git_root_path(relative_to: impl AsRef<Path>) -> eyre::Result<PathBuf> {
-    let path = std::process::Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
-        .current_dir(relative_to.as_ref())
-        .output()?
-        .stdout;
-    let path = std::str::from_utf8(&path)?.trim_end_matches('\n');
-    Ok(PathBuf::from(path))
+/// Returns the path of the top-level directory of the working git tree.
+pub fn find_git_root(relative_to: &Path) -> io::Result<Option<PathBuf>> {
+    let root =
+        if relative_to.is_absolute() { relative_to } else { &dunce::canonicalize(relative_to)? };
+    Ok(root.ancestors().find(|p| p.join(".git").is_dir()).map(Path::to_path_buf))
 }
 
-/// Returns the root path to set for the project root
+/// Returns the root path to set for the project root.
 ///
-/// traverse the dir tree up and look for a `foundry.toml` file starting at the given path or cwd,
-/// but only until the root dir of the current repo so that
+/// Traverse the dir tree up and look for a `foundry.toml` file starting at the given path or cwd,
+/// but only until the root dir of the current repo so that:
 ///
 /// ```text
 /// -- foundry.toml
@@ -51,29 +51,27 @@ pub fn find_git_root_path(relative_to: impl AsRef<Path>) -> eyre::Result<PathBuf
 ///   |__sub
 ///      |__ [given_path | cwd]
 /// ```
-/// will still detect `repo` as root
-pub fn find_project_root_path(path: Option<&PathBuf>) -> std::io::Result<PathBuf> {
-    let cwd = &std::env::current_dir()?;
-    let cwd = path.unwrap_or(cwd);
-    let boundary = find_git_root_path(cwd)
-        .ok()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or_else(|| cwd.clone());
-    let mut cwd = cwd.as_path();
-    // traverse as long as we're in the current git repo cwd
-    while cwd.starts_with(&boundary) {
-        let file_path = cwd.join(Config::FILE_NAME);
-        if file_path.is_file() {
-            return Ok(cwd.to_path_buf())
-        }
-        if let Some(parent) = cwd.parent() {
-            cwd = parent;
-        } else {
-            break
-        }
-    }
-    // no foundry.toml found
-    Ok(boundary)
+///
+/// will still detect `repo` as root.
+///
+/// Returns `repo` or `cwd` if no `foundry.toml` is found in the tree.
+///
+/// Returns an error if:
+/// - `cwd` is `Some` and is not a valid directory;
+/// - `cwd` is `None` and the [`std::env::current_dir`] call fails.
+pub fn find_project_root(cwd: Option<&Path>) -> io::Result<PathBuf> {
+    let cwd = match cwd {
+        Some(path) => path,
+        None => &std::env::current_dir()?,
+    };
+    let boundary = find_git_root(cwd)?;
+    let found = cwd
+        .ancestors()
+        // Don't look outside of the git repo if it exists.
+        .take_while(|p| if let Some(boundary) = &boundary { p.starts_with(boundary) } else { true })
+        .find(|p| p.join(Config::FILE_NAME).is_file())
+        .map(Path::to_path_buf);
+    Ok(found.or(boundary).unwrap_or_else(|| cwd.to_path_buf()))
 }
 
 /// Returns all [`Remapping`]s contained in the `remappings` str separated by newlines
@@ -151,7 +149,7 @@ pub fn foundry_toml_dirs(root: impl AsRef<Path>) -> Vec<PathBuf> {
         .into_iter()
         .filter_map(Result::ok)
         .filter(|e| e.file_type().is_dir())
-        .filter_map(|e| ethers_solc::utils::canonicalize(e.path()).ok())
+        .filter_map(|e| dunce::canonicalize(e.path()).ok())
         .filter(|p| p.join(Config::FILE_NAME).exists())
         .collect()
 }
@@ -174,52 +172,12 @@ pub(crate) fn get_dir_remapping(dir: impl AsRef<Path>) -> Option<Remapping> {
     }
 }
 
-/// Returns all available `profile` keys in a given `.toml` file
-///
-/// i.e. The toml below would return would return `["default", "ci", "local"]`
-/// ```toml
-/// [profile.default]
-/// ...
-/// [profile.ci]
-/// ...
-/// [profile.local]
-/// ```
-pub fn get_available_profiles(toml_path: impl AsRef<Path>) -> eyre::Result<Vec<String>> {
-    let mut result = vec![Config::DEFAULT_PROFILE.to_string()];
-
-    if !toml_path.as_ref().exists() {
-        return Ok(result)
-    }
-
-    let doc = read_toml(toml_path)?;
-
-    if let Some(Item::Table(profiles)) = doc.as_table().get(Config::PROFILE_SECTION) {
-        for (_, (profile, _)) in profiles.iter().enumerate() {
-            let p = profile.to_string();
-            if !result.contains(&p) {
-                result.push(p);
-            }
-        }
-    }
-
-    Ok(result)
-}
-
-/// Returns a [`toml_edit::Document`] loaded from the provided `path`.
-/// Can raise an error in case of I/O or parsing errors.
-fn read_toml(path: impl AsRef<Path>) -> eyre::Result<Document> {
-    let path = path.as_ref().to_owned();
-    let doc: Document = std::fs::read_to_string(path)?.parse()?;
-    Ok(doc)
-}
-
 /// Deserialize stringified percent. The value must be between 0 and 100 inclusive.
 pub(crate) fn deserialize_stringified_percent<'de, D>(deserializer: D) -> Result<u32, D::Error>
 where
     D: Deserializer<'de>,
 {
-    let num: U256 =
-        Numeric::deserialize(deserializer)?.try_into().map_err(serde::de::Error::custom)?;
+    let num: U256 = Numeric::deserialize(deserializer)?.into();
     let num: u64 = num.try_into().map_err(serde::de::Error::custom)?;
     if num <= 100 {
         num.try_into().map_err(serde::de::Error::custom)
@@ -228,67 +186,83 @@ where
     }
 }
 
-/// Deserialize an usize or
-pub(crate) fn deserialize_usize_or_max<'de, D>(deserializer: D) -> Result<usize, D::Error>
+/// Deserialize a `u64` or "max" for `u64::MAX`.
+pub(crate) fn deserialize_u64_or_max<'de, D>(deserializer: D) -> Result<u64, D::Error>
 where
     D: Deserializer<'de>,
 {
     #[derive(Deserialize)]
     #[serde(untagged)]
     enum Val {
-        Number(usize),
-        Text(String),
+        Number(u64),
+        String(String),
     }
 
-    let num = match Val::deserialize(deserializer)? {
-        Val::Number(num) => num,
-        Val::Text(s) => {
-            match s.as_str() {
-                "max" | "MAX" | "Max" => {
-                    // toml limitation
-                    i64::MAX as usize
-                }
-                s => s.parse::<usize>().map_err(D::Error::custom).unwrap(),
-            }
-        }
-    };
-    Ok(num)
+    match Val::deserialize(deserializer)? {
+        Val::Number(num) => Ok(num),
+        Val::String(s) if s.eq_ignore_ascii_case("max") => Ok(u64::MAX),
+        Val::String(s) => s.parse::<u64>().map_err(D::Error::custom),
+    }
 }
 
-#[cfg(test)]
-mod tests {
-    use crate::get_available_profiles;
-    use std::path::Path;
+/// Deserialize a `usize` or "max" for `usize::MAX`.
+pub(crate) fn deserialize_usize_or_max<'de, D>(deserializer: D) -> Result<usize, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_u64_or_max(deserializer)?.try_into().map_err(D::Error::custom)
+}
 
-    #[test]
-    fn get_profiles_from_toml() {
-        figment::Jail::expect_with(|jail| {
-            jail.create_file(
-                "foundry.toml",
-                r#"
-                [foo.baz]
-                libs = ['node_modules', 'lib']
+/// Helper type to parse both `u64` and `U256`
+#[derive(Clone, Copy, Deserialize)]
+#[serde(untagged)]
+pub enum Numeric {
+    /// A [U256] value.
+    U256(U256),
+    /// A `u64` value.
+    Num(u64),
+}
 
-                [profile.default]
-                libs = ['node_modules', 'lib']
+impl From<Numeric> for U256 {
+    fn from(n: Numeric) -> Self {
+        match n {
+            Numeric::U256(n) => n,
+            Numeric::Num(n) => Self::from(n),
+        }
+    }
+}
 
-                [profile.ci]
-                libs = ['node_modules', 'lib']
+impl FromStr for Numeric {
+    type Err = String;
 
-                [profile.local]
-                libs = ['node_modules', 'lib']
-            "#,
-            )?;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.starts_with("0x") {
+            U256::from_str_radix(s, 16).map(Numeric::U256).map_err(|err| err.to_string())
+        } else {
+            U256::from_str(s).map(Numeric::U256).map_err(|err| err.to_string())
+        }
+    }
+}
 
-            let path = Path::new("./foundry.toml");
-            let profiles = get_available_profiles(path).unwrap();
-
-            assert_eq!(
-                profiles,
-                vec!["default".to_string(), "ci".to_string(), "local".to_string()]
-            );
-
-            Ok(())
-        });
+/// Returns the [SpecId] derived from [EvmVersion]
+#[inline]
+pub fn evm_spec_id(evm_version: EvmVersion, odyssey: bool) -> SpecId {
+    if odyssey {
+        return SpecId::OSAKA;
+    }
+    match evm_version {
+        EvmVersion::Homestead => SpecId::HOMESTEAD,
+        EvmVersion::TangerineWhistle => SpecId::TANGERINE,
+        EvmVersion::SpuriousDragon => SpecId::SPURIOUS_DRAGON,
+        EvmVersion::Byzantium => SpecId::BYZANTIUM,
+        EvmVersion::Constantinople => SpecId::CONSTANTINOPLE,
+        EvmVersion::Petersburg => SpecId::PETERSBURG,
+        EvmVersion::Istanbul => SpecId::ISTANBUL,
+        EvmVersion::Berlin => SpecId::BERLIN,
+        EvmVersion::London => SpecId::LONDON,
+        EvmVersion::Paris => SpecId::MERGE,
+        EvmVersion::Shanghai => SpecId::SHANGHAI,
+        EvmVersion::Cancun => SpecId::CANCUN,
+        EvmVersion::Prague => SpecId::OSAKA, // Osaka enables EOF
     }
 }

@@ -2,30 +2,29 @@ use clap::{Parser, ValueHint};
 use eyre::{Context, Result};
 use foundry_cli::{
     opts::Dependency,
-    p_println, prompt,
     utils::{CommandUtils, Git, LoadConfig},
 };
 use foundry_common::fs;
 use foundry_config::{impl_figment_convert_basic, Config};
-use once_cell::sync::Lazy;
 use regex::Regex;
 use semver::Version;
 use std::{
     io::IsTerminal,
     path::{Path, PathBuf},
     str,
+    sync::LazyLock,
 };
-use tracing::{trace, warn};
 use yansi::Paint;
 
-static DEPENDENCY_VERSION_TAG_REGEX: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"^v?\d+(\.\d+)*$").unwrap());
+static DEPENDENCY_VERSION_TAG_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^v?\d+(\.\d+)*$").unwrap());
 
 /// CLI arguments for `forge install`.
-#[derive(Debug, Clone, Parser)]
-#[clap(override_usage = "forge install [OPTIONS] [DEPENDENCIES]...
+#[derive(Clone, Debug, Parser)]
+#[command(override_usage = "forge install [OPTIONS] [DEPENDENCIES]...
     forge install [OPTIONS] <github username>/<github project>@<tag>...
     forge install [OPTIONS] <alias>=<github username>/<github project>@<tag>...
+    forge install [OPTIONS] <https://<github token>@git url>...)]
     forge install [OPTIONS] <https:// git url>...")]
 pub struct InstallArgs {
     /// The dependencies to install.
@@ -39,6 +38,8 @@ pub struct InstallArgs {
     /// - A tag: v1.2.3
     /// - A commit: 8e8128
     ///
+    /// For exact match, a ref can be provided with `@tag=`, `@branch=` or `@rev=` prefix.
+    ///
     /// Target installation directory can be added via `<alias>=` suffix.
     /// The dependency will installed to `lib/<alias>`.
     dependencies: Vec<Dependency>,
@@ -47,10 +48,10 @@ pub struct InstallArgs {
     ///
     /// By default root of the Git repository, if in one,
     /// or the current working directory.
-    #[clap(long, value_hint = ValueHint::DirPath, value_name = "PATH")]
+    #[arg(long, value_hint = ValueHint::DirPath, value_name = "PATH")]
     pub root: Option<PathBuf>,
 
-    #[clap(flatten)]
+    #[command(flatten)]
     opts: DependencyInstallOpts,
 }
 
@@ -58,35 +59,31 @@ impl_figment_convert_basic!(InstallArgs);
 
 impl InstallArgs {
     pub fn run(self) -> Result<()> {
-        let mut config = self.try_load_config_emit_warnings()?;
+        let mut config = self.load_config()?;
         self.opts.install(&mut config, self.dependencies)
     }
 }
 
-#[derive(Debug, Clone, Default, Copy, Parser)]
+#[derive(Clone, Copy, Debug, Default, Parser)]
 pub struct DependencyInstallOpts {
     /// Perform shallow clones instead of deep ones.
     ///
     /// Improves performance and reduces disk usage, but prevents switching branches or tags.
-    #[clap(long)]
+    #[arg(long)]
     pub shallow: bool,
 
     /// Install without adding the dependency as a submodule.
-    #[clap(long)]
+    #[arg(long)]
     pub no_git: bool,
 
-    /// Do not create a commit.
-    #[clap(long)]
-    pub no_commit: bool,
-
-    /// Do not print any messages.
-    #[clap(short, long)]
-    pub quiet: bool,
+    /// Create a commit after installing the dependencies.
+    #[arg(long)]
+    pub commit: bool,
 }
 
 impl DependencyInstallOpts {
     pub fn git(self, config: &Config) -> Git<'_> {
-        Git::from_config(config).quiet(self.quiet).shallow(self.shallow)
+        Git::from_config(config).shallow(self.shallow)
     }
 
     /// Installs all missing dependencies.
@@ -94,20 +91,14 @@ impl DependencyInstallOpts {
     /// See also [`Self::install`].
     ///
     /// Returns true if any dependency was installed.
-    pub fn install_missing_dependencies(mut self, config: &mut Config) -> bool {
-        let DependencyInstallOpts { quiet, .. } = self;
+    pub fn install_missing_dependencies(self, config: &mut Config) -> bool {
         let lib = config.install_lib_dir();
         if self.git(config).has_missing_dependencies(Some(lib)).unwrap_or(false) {
             // The extra newline is needed, otherwise the compiler output will overwrite the message
-            p_println!(!quiet => "Missing dependencies found. Installing now...\n");
-            self.no_commit = true;
-            if self.install(config, Vec::new()).is_err() && !quiet {
-                eprintln!(
-                    "{}",
-                    Paint::yellow(
-                        "Your project has missing dependencies that could not be installed."
-                    )
-                )
+            let _ = sh_println!("Missing dependencies found. Installing now...\n");
+            if self.install(config, Vec::new()).is_err() {
+                let _ =
+                    sh_warn!("Your project has missing dependencies that could not be installed.");
             }
             true
         } else {
@@ -117,7 +108,7 @@ impl DependencyInstallOpts {
 
     /// Installs all dependencies
     pub fn install(self, config: &mut Config, dependencies: Vec<Dependency>) -> Result<()> {
-        let DependencyInstallOpts { no_git, no_commit, quiet, .. } = self;
+        let Self { no_git, commit, .. } = self;
 
         let git = self.git(config);
 
@@ -125,25 +116,47 @@ impl DependencyInstallOpts {
         let libs = git.root.join(install_lib_dir);
 
         if dependencies.is_empty() && !self.no_git {
-            p_println!(!self.quiet => "Updating dependencies in {}", libs.display());
-            git.submodule_update(false, false, Some(&libs))?;
+            // Use the root of the git repository to look for submodules.
+            let root = Git::root_of(git.root)?;
+            match git.has_submodules(Some(&root)) {
+                Ok(true) => {
+                    sh_println!("Updating dependencies in {}", libs.display())?;
+
+                    // recursively fetch all submodules (without fetching latest)
+                    git.submodule_update(false, false, false, true, Some(&libs))?;
+                }
+
+                Err(err) => {
+                    warn!(?err, "Failed to check for submodules");
+                }
+                _ => {
+                    // no submodules, nothing to do
+                }
+            }
         }
+
         fs::create_dir_all(&libs)?;
 
-        let installer = Installer { git, no_commit };
+        let installer = Installer { git, commit };
         for dep in dependencies {
             let path = libs.join(dep.name());
             let rel_path = path
                 .strip_prefix(git.root)
                 .wrap_err("Library directory is not relative to the repository root")?;
-            p_println!(!quiet => "Installing {} in {} (url: {:?}, tag: {:?})", dep.name, path.display(), dep.url, dep.tag);
+            sh_println!(
+                "Installing {} in {} (url: {:?}, tag: {:?})",
+                dep.name,
+                path.display(),
+                dep.url,
+                dep.tag
+            )?;
 
             // this tracks the actual installed tag
             let installed_tag;
             if no_git {
                 installed_tag = installer.install_as_folder(&dep, &path)?;
             } else {
-                if !no_commit {
+                if commit {
                     git.ensure_clean()?;
                 }
                 installed_tag = installer.install_as_submodule(&dep, &path)?;
@@ -151,7 +164,7 @@ impl DependencyInstallOpts {
                 // Pin branch to submodule if branch is used
                 if let Some(branch) = &installed_tag {
                     // First, check if this tag has a branch
-                    if git.has_branch(branch)? {
+                    if git.has_branch(branch, &path)? {
                         // always work with relative paths when directly modifying submodules
                         git.cmd()
                             .args(["submodule", "set-branch", "-b", branch])
@@ -159,14 +172,16 @@ impl DependencyInstallOpts {
                             .exec()?;
                     }
 
-                    // update .gitmodules which is at the root of the repo,
-                    // not necessarily at the root of the current Foundry project
-                    let root = Git::root_of(git.root)?;
-                    git.root(&root).add(Some(".gitmodules"))?;
+                    if commit {
+                        // update .gitmodules which is at the root of the repo,
+                        // not necessarily at the root of the current Foundry project
+                        let root = Git::root_of(git.root)?;
+                        git.root(&root).add(Some(".gitmodules"))?;
+                    }
                 }
 
                 // commit the installation
-                if !no_commit {
+                if commit {
                     let mut msg = String::with_capacity(128);
                     msg.push_str("forge install: ");
                     msg.push_str(dep.name());
@@ -178,14 +193,12 @@ impl DependencyInstallOpts {
                 }
             }
 
-            if !quiet {
-                let mut msg = format!("    {} {}", Paint::green("Installed"), dep.name);
-                if let Some(tag) = dep.tag.or(installed_tag) {
-                    msg.push(' ');
-                    msg.push_str(tag.as_str());
-                }
-                println!("{msg}");
+            let mut msg = format!("    {} {}", "Installed".green(), dep.name);
+            if let Some(tag) = dep.tag.or(installed_tag) {
+                msg.push(' ');
+                msg.push_str(tag.as_str());
             }
+            sh_println!("{msg}")?;
         }
 
         // update `libs` in config if not included yet
@@ -197,14 +210,14 @@ impl DependencyInstallOpts {
     }
 }
 
-pub fn install_missing_dependencies(config: &mut Config, quiet: bool) -> bool {
-    DependencyInstallOpts { quiet, ..Default::default() }.install_missing_dependencies(config)
+pub fn install_missing_dependencies(config: &mut Config) -> bool {
+    DependencyInstallOpts::default().install_missing_dependencies(config)
 }
 
 #[derive(Clone, Copy, Debug)]
 struct Installer<'a> {
     git: Git<'a>,
-    no_commit: bool,
+    commit: bool,
 }
 
 impl Installer<'_> {
@@ -221,6 +234,15 @@ impl Installer<'_> {
 
         // checkout the tag if necessary
         self.git_checkout(&dep, path, false)?;
+
+        trace!("updating dependency submodules recursively");
+        self.git.root(path).submodule_update(
+            false,
+            false,
+            false,
+            true,
+            std::iter::empty::<PathBuf>(),
+        )?;
 
         // remove git artifacts
         fs::remove_dir_all(path.join(".git"))?;
@@ -245,7 +267,16 @@ impl Installer<'_> {
         // checkout the tag if necessary
         self.git_checkout(&dep, path, true)?;
 
-        if !self.no_commit {
+        trace!("updating dependency submodules recursively");
+        self.git.root(path).submodule_update(
+            false,
+            false,
+            false,
+            true,
+            std::iter::empty::<PathBuf>(),
+        )?;
+
+        if self.commit {
             self.git.add(Some(path))?;
         }
 
@@ -301,10 +332,7 @@ impl Installer<'_> {
         let path = path.strip_prefix(self.git.root).unwrap();
 
         trace!(?dep, url, ?path, "installing git submodule");
-        self.git.submodule_add(true, url, path)?;
-
-        trace!("updating submodule recursively");
-        self.git.submodule_update(false, false, Some(path))
+        self.git.submodule_add(true, url, path)
     }
 
     fn git_checkout(self, dep: &Dependency, path: &Path, recurse: bool) -> Result<String> {
@@ -384,9 +412,9 @@ impl Installer<'_> {
 
         // multiple candidates, ask the user to choose one or skip
         candidates.insert(0, String::from("SKIP AND USE ORIGINAL TAG"));
-        println!("There are multiple matching tags:");
+        sh_println!("There are multiple matching tags:")?;
         for (i, candidate) in candidates.iter().enumerate() {
-            println!("[{i}] {candidate}");
+            sh_println!("[{i}] {candidate}")?;
         }
 
         let n_candidates = candidates.len();
@@ -401,7 +429,7 @@ impl Installer<'_> {
                 Ok(0) => return Ok(tag.into()),
                 Ok(i) if (1..=n_candidates).contains(&i) => {
                     let c = &candidates[i];
-                    println!("[{i}] {c} selected");
+                    sh_println!("[{i}] {c} selected")?;
                     return Ok(c.clone())
                 }
                 _ => continue,
@@ -446,9 +474,9 @@ impl Installer<'_> {
 
         // multiple candidates, ask the user to choose one or skip
         candidates.insert(0, format!("{tag} (original branch)"));
-        println!("There are multiple matching branches:");
+        sh_println!("There are multiple matching branches:")?;
         for (i, candidate) in candidates.iter().enumerate() {
-            println!("[{i}] {candidate}");
+            sh_println!("[{i}] {candidate}")?;
         }
 
         let n_candidates = candidates.len();
@@ -460,7 +488,7 @@ impl Installer<'_> {
 
         // default selection, return None
         if input.is_empty() {
-            println!("Canceled branch matching");
+            sh_println!("Canceled branch matching")?;
             return Ok(None)
         }
 
@@ -469,7 +497,7 @@ impl Installer<'_> {
             Ok(0) => Ok(Some(tag.into())),
             Ok(i) if (1..=n_candidates).contains(&i) => {
                 let c = &candidates[i];
-                println!("[{i}] {c} selected");
+                sh_println!("[{i}] {c} selected")?;
                 Ok(Some(c.clone()))
             }
             _ => Ok(None),
@@ -488,13 +516,14 @@ fn match_yn(input: String) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use foundry_test_utils::tempfile::tempdir;
+    use tempfile::tempdir;
 
     #[test]
+    #[ignore = "slow"]
     fn get_oz_tags() {
         let tmp = tempdir().unwrap();
         let git = Git::new(tmp.path());
-        let installer = Installer { git, no_commit: true };
+        let installer = Installer { git, commit: false };
 
         git.init().unwrap();
 

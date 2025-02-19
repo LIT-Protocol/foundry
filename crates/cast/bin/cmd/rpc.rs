@@ -1,12 +1,11 @@
 use cast::Cast;
 use clap::Parser;
 use eyre::Result;
-use foundry_cli::{opts::RpcOpts, utils};
-use foundry_config::Config;
+use foundry_cli::{opts::RpcOpts, utils, utils::LoadConfig};
 use itertools::Itertools;
 
 /// CLI arguments for `cast rpc`.
-#[derive(Debug, Clone, Parser)]
+#[derive(Clone, Debug, Parser)]
 pub struct RpcArgs {
     /// RPC method name
     method: String,
@@ -26,18 +25,18 @@ pub struct RpcArgs {
     ///
     /// cast rpc eth_getBlockByNumber '["0x123", false]' --raw
     ///     => {"method": "eth_getBlockByNumber", "params": ["0x123", false] ... }
-    #[clap(long, short = 'w')]
+    #[arg(long, short = 'w')]
     raw: bool,
 
-    #[clap(flatten)]
+    #[command(flatten)]
     rpc: RpcOpts,
 }
 
 impl RpcArgs {
     pub async fn run(self) -> Result<()> {
-        let RpcArgs { raw, method, params, rpc } = self;
+        let Self { raw, method, params, rpc } = self;
 
-        let config = Config::from(&rpc);
+        let config = rpc.load_config()?;
         let provider = utils::get_provider(&config)?;
 
         let params = if raw {
@@ -53,7 +52,7 @@ impl RpcArgs {
         } else {
             serde_json::Value::Array(params.into_iter().map(value_or_string).collect())
         };
-        println!("{}", Cast::new(provider).rpc(&method, params).await?);
+        sh_println!("{}", Cast::new(provider).rpc(&method, params).await?)?;
         Ok(())
     }
 }

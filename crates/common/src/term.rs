@@ -1,10 +1,10 @@
 //! terminal utils
-use ethers_solc::{
-    remappings::Remapping,
-    report::{self, BasicStdoutReporter, Reporter, SolcCompilerIoReporter},
-    CompilerInput, CompilerOutput, Solc,
+use foundry_compilers::{
+    artifacts::remappings::Remapping,
+    report::{self, BasicStdoutReporter, Reporter},
 };
-use once_cell::sync::Lazy;
+use foundry_config::find_project_root;
+use itertools::Itertools;
 use semver::Version;
 use std::{
     io,
@@ -12,11 +12,14 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         mpsc::{self, TryRecvError},
-        Arc, Mutex,
+        LazyLock,
     },
+    thread,
     time::Duration,
 };
 use yansi::Paint;
+
+use crate::shell;
 
 /// Some spinners
 // https://github.com/gernest/wow/blob/master/spin/spinners.go
@@ -28,7 +31,7 @@ pub static SPINNERS: &[&[&str]] = &[
     &[" ", "▘", "▀", "▜", "█", "▟", "▄", "▖"],
 ];
 
-static TERM_SETTINGS: Lazy<TermSettings> = Lazy::new(TermSettings::from_env);
+static TERM_SETTINGS: LazyLock<TermSettings> = LazyLock::new(TermSettings::from_env);
 
 /// Helper type to determine the current tty
 pub struct TermSettings {
@@ -37,8 +40,8 @@ pub struct TermSettings {
 
 impl TermSettings {
     /// Returns a new [`TermSettings`], configured from the current environment.
-    pub fn from_env() -> TermSettings {
-        TermSettings { indicate_progress: std::io::stdout().is_terminal() }
+    pub fn from_env() -> Self {
+        Self { indicate_progress: std::io::stdout().is_terminal() }
     }
 }
 
@@ -58,7 +61,7 @@ impl Spinner {
     }
 
     pub fn with_indicator(indicator: &'static [&'static str], msg: impl Into<String>) -> Self {
-        Spinner {
+        Self {
             indicator,
             no_progress: !TERM_SETTINGS.indicate_progress,
             message: msg.into(),
@@ -71,17 +74,12 @@ impl Spinner {
             return
         }
 
-        print!(
-            "\r\x33[2K\r{} {}",
-            Paint::new(format!("[{}]", Paint::green(self.indicator[self.idx]))).bold(),
-            self.message
-        );
+        let indicator = self.indicator[self.idx % self.indicator.len()].green();
+        let indicator = Paint::new(format!("[{indicator}]")).bold();
+        let _ = sh_print!("\r\x33[2K\r{indicator} {}", self.message);
         io::stdout().flush().unwrap();
 
-        self.idx += 1;
-        if self.idx >= self.indicator.len() {
-            self.idx = 0;
-        }
+        self.idx = self.idx.wrapping_add(1);
     }
 
     pub fn message(&mut self, msg: impl Into<String>) {
@@ -93,13 +91,12 @@ impl Spinner {
 ///
 /// This reporter will prefix messages with a spinning cursor
 #[derive(Debug)]
+#[must_use = "Terminates the spinner on drop"]
 pub struct SpinnerReporter {
-    /// the timeout in ms
-    sender: Arc<Mutex<mpsc::Sender<SpinnerMsg>>>,
-    /// A reporter that logs solc compiler input and output to separate files if configured via env
-    /// var
-    solc_io_report: SolcCompilerIoReporter,
+    /// The sender to the spinner thread.
+    sender: mpsc::Sender<SpinnerMsg>,
 }
+
 impl SpinnerReporter {
     /// Spawns the [`Spinner`] on a new thread
     ///
@@ -108,43 +105,37 @@ impl SpinnerReporter {
     /// On drop the channel will disconnect and the thread will terminate
     pub fn spawn() -> Self {
         let (sender, rx) = mpsc::channel::<SpinnerMsg>();
-        std::thread::spawn(move || {
-            let mut spinner = Spinner::new("Compiling...");
-            loop {
-                spinner.tick();
-                match rx.try_recv() {
-                    Ok(msg) => {
-                        match msg {
-                            SpinnerMsg::Msg(msg) => {
-                                spinner.message(msg);
-                                // new line so past messages are not overwritten
-                                println!();
-                            }
-                            SpinnerMsg::Shutdown(ack) => {
-                                // end with a newline
-                                println!();
-                                let _ = ack.send(());
-                                break
-                            }
+
+        std::thread::Builder::new()
+            .name("spinner".into())
+            .spawn(move || {
+                let mut spinner = Spinner::new("Compiling...");
+                loop {
+                    spinner.tick();
+                    match rx.try_recv() {
+                        Ok(SpinnerMsg::Msg(msg)) => {
+                            spinner.message(msg);
+                            // new line so past messages are not overwritten
+                            let _ = sh_println!();
                         }
-                    }
-                    Err(TryRecvError::Disconnected) => break,
-                    Err(TryRecvError::Empty) => {
-                        std::thread::sleep(std::time::Duration::from_millis(100));
+                        Ok(SpinnerMsg::Shutdown(ack)) => {
+                            // end with a newline
+                            let _ = sh_println!();
+                            let _ = ack.send(());
+                            break
+                        }
+                        Err(TryRecvError::Disconnected) => break,
+                        Err(TryRecvError::Empty) => thread::sleep(Duration::from_millis(100)),
                     }
                 }
-            }
-        });
-        SpinnerReporter {
-            sender: Arc::new(Mutex::new(sender)),
-            solc_io_report: SolcCompilerIoReporter::from_default_env(),
-        }
+            })
+            .expect("failed to spawn thread");
+
+        Self { sender }
     }
 
     fn send_msg(&self, msg: impl Into<String>) {
-        if let Ok(sender) = self.sender.lock() {
-            let _ = sender.send(SpinnerMsg::Msg(msg.into()));
-        }
+        let _ = self.sender.send(SpinnerMsg::Msg(msg.into()));
     }
 }
 
@@ -155,59 +146,64 @@ enum SpinnerMsg {
 
 impl Drop for SpinnerReporter {
     fn drop(&mut self) {
-        if let Ok(sender) = self.sender.lock() {
-            let (tx, rx) = mpsc::channel();
-            if sender.send(SpinnerMsg::Shutdown(tx)).is_ok() {
-                let _ = rx.recv();
-            }
+        let (tx, rx) = mpsc::channel();
+        if self.sender.send(SpinnerMsg::Shutdown(tx)).is_ok() {
+            let _ = rx.recv();
         }
     }
 }
 
 impl Reporter for SpinnerReporter {
-    fn on_solc_spawn(
-        &self,
-        _solc: &Solc,
-        version: &Version,
-        input: &CompilerInput,
-        dirty_files: &[PathBuf],
-    ) {
+    fn on_compiler_spawn(&self, compiler_name: &str, version: &Version, dirty_files: &[PathBuf]) {
+        // Verbose message with dirty files displays first to avoid being overlapped
+        // by the spinner in .tick() which prints repeatedly over the same line.
+        if shell::verbosity() >= 5 {
+            let project_root = find_project_root(None);
+
+            self.send_msg(format!(
+                "Files to compile:\n{}",
+                dirty_files
+                    .iter()
+                    .map(|path| {
+                        let trimmed_path = if let Ok(project_root) = &project_root {
+                            path.strip_prefix(project_root).unwrap_or(path)
+                        } else {
+                            path
+                        };
+                        format!("- {}", trimmed_path.display())
+                    })
+                    .sorted()
+                    .format("\n")
+            ));
+        }
+
         self.send_msg(format!(
-            "Compiling {} files with {}.{}.{}",
+            "Compiling {} files with {} {}.{}.{}",
             dirty_files.len(),
+            compiler_name,
             version.major,
             version.minor,
             version.patch
         ));
-        self.solc_io_report.log_compiler_input(input, version);
     }
 
-    fn on_solc_success(
-        &self,
-        _solc: &Solc,
-        version: &Version,
-        output: &CompilerOutput,
-        duration: &Duration,
-    ) {
-        self.solc_io_report.log_compiler_output(output, version);
+    fn on_compiler_success(&self, compiler_name: &str, version: &Version, duration: &Duration) {
         self.send_msg(format!(
-            "Solc {}.{}.{} finished in {duration:.2?}",
-            version.major, version.minor, version.patch
+            "{} {}.{}.{} finished in {duration:.2?}",
+            compiler_name, version.major, version.minor, version.patch
         ));
     }
 
-    /// Invoked before a new [`Solc`] bin is installed
     fn on_solc_installation_start(&self, version: &Version) {
-        self.send_msg(format!("Installing solc version {version}"));
+        self.send_msg(format!("Installing Solc version {version}"));
     }
 
-    /// Invoked before a new [`Solc`] bin was successfully installed
     fn on_solc_installation_success(&self, version: &Version) {
-        self.send_msg(format!("Successfully installed solc {version}"));
+        self.send_msg(format!("Successfully installed Solc {version}"));
     }
 
     fn on_solc_installation_error(&self, version: &Version, error: &str) {
-        self.send_msg(Paint::red(format!("Failed to install solc {version}: {error}")).to_string());
+        self.send_msg(format!("Failed to install Solc {version}: {error}").red().to_string());
     }
 
     fn on_unresolved_imports(&self, imports: &[(&Path, &Path)], remappings: &[Remapping]) {
@@ -227,21 +223,6 @@ pub fn with_spinner_reporter<T>(f: impl FnOnce() -> T) -> T {
     };
     report::with_scoped(&reporter, f)
 }
-
-#[macro_export]
-/// Displays warnings on the cli
-macro_rules! cli_warn {
-    ($($arg:tt)*) => {
-        eprintln!(
-            "{}{} {}",
-            yansi::Paint::yellow("warning").bold(),
-            yansi::Paint::new(":").bold(),
-            format_args!($($arg)*)
-        )
-    }
-}
-
-pub use cli_warn;
 
 #[cfg(test)]
 mod tests {

@@ -1,4 +1,5 @@
-//! Contains various `std::fs` wrapper functions that also contain the target path in their errors
+//! Contains various `std::fs` wrapper functions that also contain the target path in their errors.
+
 use crate::errors::FsPathError;
 use serde::{de::DeserializeOwned, Serialize};
 use std::{
@@ -7,13 +8,15 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-type Result<T> = std::result::Result<T, FsPathError>;
+/// The [`fs`](self) result type.
+pub type Result<T> = std::result::Result<T, FsPathError>;
 
 /// Wrapper for [`File::create`].
 pub fn create_file(path: impl AsRef<Path>) -> Result<fs::File> {
     let path = path.as_ref();
     File::create(path).map_err(|err| FsPathError::create_file(err, path))
 }
+
 /// Wrapper for [`std::fs::remove_file`].
 pub fn remove_file(path: impl AsRef<Path>) -> Result<()> {
     let path = path.as_ref();
@@ -42,9 +45,8 @@ pub fn read_to_string(path: impl AsRef<Path>) -> Result<String> {
 pub fn read_json_file<T: DeserializeOwned>(path: &Path) -> Result<T> {
     // read the file into a byte array first
     // https://github.com/serde-rs/json/issues/160
-    let bytes = read(path)?;
-    serde_json::from_slice(&bytes)
-        .map_err(|source| FsPathError::ReadJson { source, path: path.into() })
+    let s = read_to_string(path)?;
+    serde_json::from_str(&s).map_err(|source| FsPathError::ReadJson { source, path: path.into() })
 }
 
 /// Writes the object as a JSON object.
@@ -52,6 +54,15 @@ pub fn write_json_file<T: Serialize>(path: &Path, obj: &T) -> Result<()> {
     let file = create_file(path)?;
     let mut writer = BufWriter::new(file);
     serde_json::to_writer(&mut writer, obj)
+        .map_err(|source| FsPathError::WriteJson { source, path: path.into() })?;
+    writer.flush().map_err(|e| FsPathError::write(e, path))
+}
+
+/// Writes the object as a pretty JSON object.
+pub fn write_pretty_json_file<T: Serialize>(path: &Path, obj: &T) -> Result<()> {
+    let file = create_file(path)?;
+    let mut writer = BufWriter::new(file);
+    serde_json::to_writer_pretty(&mut writer, obj)
         .map_err(|source| FsPathError::WriteJson { source, path: path.into() })?;
     writer.flush().map_err(|e| FsPathError::write(e, path))
 }
@@ -132,20 +143,27 @@ pub fn normalize_path(path: &Path) -> PathBuf {
     ret
 }
 
-/// Returns all files with the given extension under the `root` dir
-pub fn files_with_ext(root: impl AsRef<Path>, ext: &str) -> Vec<PathBuf> {
+/// Returns an iterator over all files with the given extension under the `root` dir.
+pub fn files_with_ext<'a>(root: &Path, ext: &'a str) -> impl Iterator<Item = PathBuf> + 'a {
     walkdir::WalkDir::new(root)
+        .sort_by_file_name()
         .into_iter()
         .filter_map(walkdir::Result::ok)
-        .filter(|e| e.file_type().is_file())
-        .filter(|e| e.path().extension().map(|e| e == ext).unwrap_or_default())
-        .map(|e| e.path().into())
-        .collect()
+        .filter(|e| e.file_type().is_file() && e.path().extension() == Some(ext.as_ref()))
+        .map(walkdir::DirEntry::into_path)
 }
 
-/// Returns a list of absolute paths to all the json files under the root
-pub fn json_files(root: impl AsRef<Path>) -> Vec<PathBuf> {
+/// Returns an iterator over all JSON files under the `root` dir.
+pub fn json_files(root: &Path) -> impl Iterator<Item = PathBuf> {
     files_with_ext(root, "json")
+}
+
+/// Canonicalize a path, returning an error if the path does not exist.
+///
+/// Mainly useful to apply canonicalization to paths obtained from project files but still error
+/// properly instead of flattening the errors.
+pub fn canonicalize_path(path: impl AsRef<Path>) -> std::io::Result<PathBuf> {
+    dunce::canonicalize(path)
 }
 
 #[cfg(test)]

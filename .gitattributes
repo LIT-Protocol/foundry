@@ -1,4 +1,5 @@
-# auto-detection may fail for human-readable files, like the ones in abi/abi/*.sol
-**/*.sol linguist-language=Solidity
+crates/cheatcodes/assets/*.json linguist-generated
+testdata/cheats/Vm.sol linguist-generated
 
-crates/abi/src/bindings/*.rs linguist-generated
+# See <https://git-scm.com/docs/gitattributes#_defining_a_custom_hunk_header>
+*.rs diff=rust

@@ -1,50 +1,73 @@
 //! The `anvil` cli
+
 use anvil::cmd::NodeArgs;
 use clap::{CommandFactory, Parser, Subcommand};
+use eyre::Result;
+use foundry_cli::{handler, opts::GlobalArgs, utils};
+use foundry_common::version::{LONG_VERSION, SHORT_VERSION};
+
+#[cfg(all(feature = "jemalloc", unix))]
+#[global_allocator]
+static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 /// A fast local Ethereum development node.
-#[derive(Debug, Parser)]
-#[clap(name = "anvil", version = anvil::VERSION_MESSAGE, next_display_order = None)]
-pub struct App {
-    #[clap(flatten)]
+#[derive(Parser)]
+#[command(name = "anvil", version = SHORT_VERSION, long_version = LONG_VERSION, next_display_order = None)]
+pub struct Anvil {
+    /// Include the global arguments.
+    #[command(flatten)]
+    pub global: GlobalArgs,
+
+    #[command(flatten)]
     pub node: NodeArgs,
 
-    #[clap(subcommand)]
-    pub cmd: Option<Commands>,
+    #[command(subcommand)]
+    pub cmd: Option<AnvilSubcommand>,
 }
 
-#[derive(Clone, Debug, Subcommand, Eq, PartialEq)]
-pub enum Commands {
+#[derive(Subcommand)]
+pub enum AnvilSubcommand {
     /// Generate shell completions script.
-    #[clap(visible_alias = "com")]
+    #[command(visible_alias = "com")]
     Completions {
-        #[clap(value_enum)]
+        #[arg(value_enum)]
         shell: clap_complete::Shell,
     },
 
     /// Generate Fig autocompletion spec.
-    #[clap(visible_alias = "fig")]
+    #[command(visible_alias = "fig")]
     GenerateFigSpec,
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut app = App::parse();
-    app.node.evm_opts.resolve_rpc_alias();
+fn main() {
+    if let Err(err) = run() {
+        let _ = foundry_common::sh_err!("{err:?}");
+        std::process::exit(1);
+    }
+}
 
-    if let Some(ref cmd) = app.cmd {
+fn run() -> Result<()> {
+    handler::install();
+    utils::load_dotenv();
+    utils::enable_paint();
+
+    let mut args = Anvil::parse();
+    args.global.init()?;
+    args.node.evm.resolve_rpc_alias();
+
+    if let Some(cmd) = &args.cmd {
         match cmd {
-            Commands::Completions { shell } => {
+            AnvilSubcommand::Completions { shell } => {
                 clap_complete::generate(
                     *shell,
-                    &mut App::command(),
+                    &mut Anvil::command(),
                     "anvil",
                     &mut std::io::stdout(),
                 );
             }
-            Commands::GenerateFigSpec => clap_complete::generate(
+            AnvilSubcommand::GenerateFigSpec => clap_complete::generate(
                 clap_complete_fig::Fig,
-                &mut App::command(),
+                &mut Anvil::command(),
                 "anvil",
                 &mut std::io::stdout(),
             ),
@@ -53,9 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let _ = fdlimit::raise_fd_limit();
-    app.node.run().await?;
-
-    Ok(())
+    tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(args.node.run())
 }
 
 #[cfg(test)]
@@ -63,13 +84,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn verify_cli() {
+        Anvil::command().debug_assert();
+    }
+
+    #[test]
     fn can_parse_help() {
-        let _: App = App::parse_from(["anvil", "--help"]);
+        let _: Anvil = Anvil::parse_from(["anvil", "--help"]);
+    }
+
+    #[test]
+    fn can_parse_short_version() {
+        let _: Anvil = Anvil::parse_from(["anvil", "-V"]);
+    }
+
+    #[test]
+    fn can_parse_long_version() {
+        let _: Anvil = Anvil::parse_from(["anvil", "--version"]);
     }
 
     #[test]
     fn can_parse_completions() {
-        let args: App = App::parse_from(["anvil", "completions", "bash"]);
-        assert_eq!(args.cmd, Some(Commands::Completions { shell: clap_complete::Shell::Bash }));
+        let args: Anvil = Anvil::parse_from(["anvil", "completions", "bash"]);
+        assert!(matches!(
+            args.cmd,
+            Some(AnvilSubcommand::Completions { shell: clap_complete::Shell::Bash })
+        ));
     }
 }

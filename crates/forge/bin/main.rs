@@ -2,102 +2,163 @@ use clap::{CommandFactory, Parser};
 use clap_complete::generate;
 use eyre::Result;
 use foundry_cli::{handler, utils};
+use foundry_common::shell;
+use foundry_evm::inspectors::cheatcodes::{set_execution_context, ForgeContext};
 
 mod cmd;
-mod opts;
-
 use cmd::{cache::CacheSubcommands, generate::GenerateSubcommands, watch};
-use opts::{Opts, Subcommands};
 
-fn main() -> Result<()> {
+mod opts;
+use opts::{Forge, ForgeSubcommand};
+
+#[macro_use]
+extern crate foundry_common;
+
+#[macro_use]
+extern crate tracing;
+
+#[cfg(all(feature = "jemalloc", unix))]
+#[global_allocator]
+static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
+fn main() {
+    if let Err(err) = run() {
+        let _ = foundry_common::sh_err!("{err:?}");
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<()> {
+    handler::install();
     utils::load_dotenv();
-    handler::install()?;
     utils::subscriber();
     utils::enable_paint();
 
-    let opts = Opts::parse();
-    match opts.sub {
-        Subcommands::Test(cmd) => {
+    let args = Forge::parse();
+    args.global.init()?;
+    init_execution_context(&args.cmd);
+
+    match args.cmd {
+        ForgeSubcommand::Test(cmd) => {
             if cmd.is_watch() {
                 utils::block_on(watch::watch_test(cmd))
             } else {
+                let silent = cmd.junit || shell::is_json();
                 let outcome = utils::block_on(cmd.run())?;
-                outcome.ensure_ok()
+                outcome.ensure_ok(silent)
             }
         }
-        Subcommands::Script(cmd) => {
-            // install the shell before executing the command
-            foundry_common::shell::set_shell(foundry_common::shell::Shell::from_args(
-                cmd.opts.args.silent,
-                cmd.json,
-            ))?;
-            utils::block_on(cmd.run_script(Default::default()))
+        ForgeSubcommand::Script(cmd) => utils::block_on(cmd.run_script()),
+        ForgeSubcommand::Coverage(cmd) => {
+            if cmd.is_watch() {
+                utils::block_on(watch::watch_coverage(cmd))
+            } else {
+                utils::block_on(cmd.run())
+            }
         }
-        Subcommands::Coverage(cmd) => utils::block_on(cmd.run()),
-        Subcommands::Bind(cmd) => cmd.run(),
-        Subcommands::Build(cmd) => {
+        ForgeSubcommand::Bind(cmd) => cmd.run(),
+        ForgeSubcommand::Build(cmd) => {
             if cmd.is_watch() {
                 utils::block_on(watch::watch_build(cmd))
             } else {
-                cmd.run().map(|_| ())
+                cmd.run().map(drop)
             }
         }
-        Subcommands::Debug(cmd) => utils::block_on(cmd.debug(Default::default())),
-        Subcommands::VerifyContract(args) => utils::block_on(args.run()),
-        Subcommands::VerifyCheck(args) => utils::block_on(args.run()),
-        Subcommands::Cache(cmd) => match cmd.sub {
+        ForgeSubcommand::VerifyContract(args) => utils::block_on(args.run()),
+        ForgeSubcommand::VerifyCheck(args) => utils::block_on(args.run()),
+        ForgeSubcommand::VerifyBytecode(cmd) => utils::block_on(cmd.run()),
+        ForgeSubcommand::Clone(cmd) => utils::block_on(cmd.run()),
+        ForgeSubcommand::Cache(cmd) => match cmd.sub {
             CacheSubcommands::Clean(cmd) => cmd.run(),
             CacheSubcommands::Ls(cmd) => cmd.run(),
         },
-        Subcommands::Create(cmd) => utils::block_on(cmd.run()),
-        Subcommands::Update(cmd) => cmd.run(),
-        Subcommands::Install(cmd) => cmd.run(),
-        Subcommands::Remove(cmd) => cmd.run(),
-        Subcommands::Remappings(cmd) => cmd.run(),
-        Subcommands::Init(cmd) => cmd.run(),
-        Subcommands::Completions { shell } => {
-            generate(shell, &mut Opts::command(), "forge", &mut std::io::stdout());
+        ForgeSubcommand::Create(cmd) => utils::block_on(cmd.run()),
+        ForgeSubcommand::Update(cmd) => cmd.run(),
+        ForgeSubcommand::Install(cmd) => cmd.run(),
+        ForgeSubcommand::Remove(cmd) => cmd.run(),
+        ForgeSubcommand::Remappings(cmd) => cmd.run(),
+        ForgeSubcommand::Init(cmd) => cmd.run(),
+        ForgeSubcommand::Completions { shell } => {
+            generate(shell, &mut Forge::command(), "forge", &mut std::io::stdout());
             Ok(())
         }
-        Subcommands::GenerateFigSpec => {
+        ForgeSubcommand::GenerateFigSpec => {
             clap_complete::generate(
                 clap_complete_fig::Fig,
-                &mut Opts::command(),
+                &mut Forge::command(),
                 "forge",
                 &mut std::io::stdout(),
             );
             Ok(())
         }
-        Subcommands::Clean { root } => {
-            let config = utils::load_config_with_root(root);
-            config.project()?.cleanup()?;
+        ForgeSubcommand::Clean { root } => {
+            let config = utils::load_config_with_root(root.as_deref())?;
+            let project = config.project()?;
+            config.cleanup(&project)?;
             Ok(())
         }
-        Subcommands::Snapshot(cmd) => {
+        ForgeSubcommand::Snapshot(cmd) => {
             if cmd.is_watch() {
-                utils::block_on(watch::watch_snapshot(cmd))
+                utils::block_on(watch::watch_gas_snapshot(cmd))
             } else {
                 utils::block_on(cmd.run())
             }
         }
-        Subcommands::Fmt(cmd) => cmd.run(),
-        Subcommands::Config(cmd) => cmd.run(),
-        Subcommands::Flatten(cmd) => cmd.run(),
-        Subcommands::Inspect(cmd) => cmd.run(),
-        Subcommands::UploadSelectors(args) => utils::block_on(args.run()),
-        Subcommands::Tree(cmd) => cmd.run(),
-        Subcommands::Geiger(cmd) => {
-            let check = cmd.check;
+        ForgeSubcommand::Fmt(cmd) => {
+            if cmd.is_watch() {
+                utils::block_on(watch::watch_fmt(cmd))
+            } else {
+                cmd.run()
+            }
+        }
+        ForgeSubcommand::Config(cmd) => cmd.run(),
+        ForgeSubcommand::Flatten(cmd) => cmd.run(),
+        ForgeSubcommand::Inspect(cmd) => cmd.run(),
+        ForgeSubcommand::Tree(cmd) => cmd.run(),
+        ForgeSubcommand::Geiger(cmd) => {
             let n = cmd.run()?;
-            if check && n > 0 {
+            if n > 0 {
                 std::process::exit(n as i32);
             }
             Ok(())
         }
-        Subcommands::Doc(cmd) => cmd.run(),
-        Subcommands::Selectors { command } => utils::block_on(command.run()),
-        Subcommands::Generate(cmd) => match cmd.sub {
+        ForgeSubcommand::Doc(cmd) => {
+            if cmd.is_watch() {
+                utils::block_on(watch::watch_doc(cmd))
+            } else {
+                utils::block_on(cmd.run())?;
+                Ok(())
+            }
+        }
+        ForgeSubcommand::Selectors { command } => utils::block_on(command.run()),
+        ForgeSubcommand::Generate(cmd) => match cmd.sub {
             GenerateSubcommands::Test(cmd) => cmd.run(),
         },
+        ForgeSubcommand::Compiler(cmd) => cmd.run(),
+        ForgeSubcommand::Soldeer(cmd) => utils::block_on(cmd.run()),
+        ForgeSubcommand::Eip712(cmd) => cmd.run(),
+        ForgeSubcommand::BindJson(cmd) => cmd.run(),
     }
+}
+
+/// Set the program execution context based on `forge` subcommand used.
+/// The execution context can be set only once per program, and it can be checked by using
+/// cheatcodes.
+fn init_execution_context(subcommand: &ForgeSubcommand) {
+    let context = match subcommand {
+        ForgeSubcommand::Test(_) => ForgeContext::Test,
+        ForgeSubcommand::Coverage(_) => ForgeContext::Coverage,
+        ForgeSubcommand::Snapshot(_) => ForgeContext::Snapshot,
+        ForgeSubcommand::Script(cmd) => {
+            if cmd.broadcast {
+                ForgeContext::ScriptBroadcast
+            } else if cmd.resume {
+                ForgeContext::ScriptResume
+            } else {
+                ForgeContext::ScriptDryRun
+            }
+        }
+        _ => ForgeContext::Unknown,
+    };
+    set_execution_context(context);
 }
