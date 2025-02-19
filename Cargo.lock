@@ -7353,8 +7353,6 @@ dependencies = [
 [[package]]
 name = "revm"
 version = "19.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1538aea4d103a8044820eede9b1254e1b5a2a2abaf3f9a67bef19f8865cf1826"
 dependencies = [
  "auto_impl",
  "cfg-if",
@@ -7387,8 +7385,6 @@ dependencies = [
 [[package]]
 name = "revm-interpreter"
 version = "15.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c0f632e761f171fb2f6ace8d1552a5793e0350578d4acec3e79ade1489f4c2a6"
 dependencies = [
  "revm-primitives",
  "serde",
@@ -7397,8 +7393,6 @@ dependencies = [
 [[package]]
 name = "revm-precompile"
 version = "16.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6542fb37650dfdbf4b9186769e49c4a8bc1901a3280b2ebf32f915b6c8850f36"
 dependencies = [
  "aurora-engine-modexp",
  "blst",
@@ -7417,8 +7411,6 @@ dependencies = [
 [[package]]
 name = "revm-primitives"
 version = "15.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "48faea1ecf2c9f80d9b043bbde0db9da616431faed84c4cfa3dd7393005598e6"
 dependencies = [
  "alloy-eip2930",
  "alloy-eip7702",

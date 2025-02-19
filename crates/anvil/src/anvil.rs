@@ -40,6 +40,9 @@ pub enum AnvilSubcommand {
 }
 
 fn main() {
+    // Fork created from Foundry commit e144b82070619b6e10485c38734b4d4d45aebe04
+    // and revm commit 62be6f6c2a04d75c2694195408527b1f5d28255b
+    println!("Lit Protocol Anvil Fork 2025-02-18 Launching");
     if let Err(err) = run() {
         let _ = foundry_common::sh_err!("{err:?}");
         std::process::exit(1);
@@ -72,7 +75,7 @@ fn run() -> Result<()> {
                 &mut std::io::stdout(),
             ),
         }
-        return Ok(())
+        return Ok(());
     }
 
     let _ = fdlimit::raise_fd_limit();
