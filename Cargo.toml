@@ -335,4 +335,3 @@ yansi = { version = "1.0", features = ["detect-tty", "detect-env"] }
 
 revm = { git = "https://github.com/LIT-Protocol/revm", branch = "feature/lit-fork" }
 revm-primitives = { git = "https://github.com/LIT-Protocol/revm", branch = "feature/lit-fork" }
-svm-rs-builds = "0.5.23"
