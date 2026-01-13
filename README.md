@@ -22,6 +22,43 @@
 
 ---
 
+# Lit Fork
+
+This fork adds some precompiles for cryptographic operations. It's used in CI for Lit. In production, we use Arbitrum stylus contracts instead of these precompiles. There is no "stylus" feature in foundry, so we use foundry standard precompiles in CI and the actual stylus contracts in production.
+
+## Lit Build Errors
+
+If you get the following error, run `./fix_svm_builds.sh` to fix the builds.rs file and the duplicate SOLC_VERSION_0_8_31 entries.
+
+```
+error[E0428]: the name `SOLC_VERSION_0_8_31` is defined multiple times
+   --> /Users/chris/Documents/WorkStuff/Lit/foundry/target/release/build/svm-rs-builds-07ba2dd7575ff673/out/builds.rs:161:1
+    |
+159 | pub const SOLC_VERSION_0_8_31: semver::Version = semver::Version::new(0,8,31);
+    | ------------------------------------------------------------------------------ previous definition of the value `SOLC_VERSION_0_8_31` here
+160 | pub const SOLC_VERSION_0_8_31_CHECKSUM: &str = "7aa507bd5246bd31576998f6ec45b02313bdb3297722fc8c376141cd46975063";
+161 | pub const SOLC_VERSION_0_8_31: semver::Version = semver::Version::new(0,8,31);
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `SOLC_VERSION_0_8_31` redefined here
+    |
+    = note: `SOLC_VERSION_0_8_31` must be defined only once in the value namespace of this module
+
+error[E0428]: the name `SOLC_VERSION_0_8_31_CHECKSUM` is defined multiple times
+   --> /Users/chris/Documents/WorkStuff/Lit/foundry/target/release/build/svm-rs-builds-07ba2dd7575ff673/out/builds.rs:162:1
+    |
+160 | pub const SOLC_VERSION_0_8_31_CHECKSUM: &str = "7aa507bd5246bd31576998f6ec45b02313bdb3297722fc8c376141cd46975063";
+    | ------------------------------------------------------------------------------------------------------------------ previous definition of the value `SOLC_VERSION_0_8_31_CHECKSUM` here
+161 | pub const SOLC_VERSION_0_8_31: semver::Version = semver::Version::new(0,8,31);
+162 | pub const SOLC_VERSION_0_8_31_CHECKSUM: &str = "f5a243d6b2dd8fba307e36c5fefa2d8eb3ae74ba81036d1c17c971b5d346ade9";
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `SOLC_VERSION_0_8_31_CHECKSUM` redefined here
+    |
+    = note: `SOLC_VERSION_0_8_31_CHECKSUM` must be defined only once in the value namespace of this module
+
+For more information about this error, try `rustc --explain E0428`.
+error: could not compile `svm-rs-builds` (lib) due to 2 previous errors
+warning: build failed, waiting for other jobs to finish...
+foundryup: command failed: cargo build --bins --release
+```
+
 ### Foundry is a blazing fast, portable and modular toolkit for Ethereum application development written in Rust.
 
 Foundry consists of:
